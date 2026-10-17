@@ -82,25 +82,354 @@ def configuration_candidates(row, configs):
 
 
 def select_configuration(row, configs):
+    # Restituisce: Partner, Esito, Decorrenza, Gettone RES/IVA, Ricorrente RES/IVA, Partner storico.
+    # Partner = agente con modello attivo alla sottoscrizione (usato per le commissioni).
+    # Partner storico = agente a prescindere dalla decorrenza del modello (usato per il Cohort Churn).
     candidates, outcome = configuration_candidates(row, configs)
     signed_month = row['Mese sottoscrizione']
-    active = candidates[candidates['Decorrenza'].notna() & (candidates['Decorrenza'] <= signed_month)].copy()
-    if active.empty:
+    if candidates.empty:
+        return pd.Series([None, outcome, pd.NaT, None, None, None, None, None])
+
+    sub = row.get('Subchannel')
+    effective, reasons = [], []
+    for agent, grp in candidates.groupby('Agente', sort=False):
+        dated = grp[grp['Decorrenza'].notna()].sort_values('Decorrenza')
+        if pd.notna(signed_month):
+            in_force = dated[dated['Decorrenza'] <= signed_month]
+        else:
+            in_force = dated.iloc[0:0]
+        if not in_force.empty:
+            cfg, attivo = in_force.iloc[-1], True
+        elif not dated.empty:
+            cfg, attivo = dated.iloc[0], False
+        else:
+            cfg, attivo = grp.iloc[0], False
+        # ESCLUDI SELF / ESCLUDI GD valgono per la configurazione dell'agente in vigore
+        # e prevalgono anche sul match da Promo code.
+        why = exclusion_reason(sub, cfg.get('ESCLUDI SELF'), cfg.get('ESCLUDI GD'))
+        if why:
+            reasons.append(why)
+        else:
+            effective.append((agent, cfg, attivo))
+
+    if not effective:
+        return pd.Series([None, reasons[0], pd.NaT, None, None, None, None, None])
+
+    agents = {agent for agent, _, _ in effective}
+    historic_partner = next(iter(agents)) if len(agents) == 1 else None
+    in_force_rows = [cfg for _, cfg, attivo in effective if attivo]
+    if not in_force_rows:
         # Il mapping può essere noto, ma il modello non ancora attivo.
-        if not candidates.empty:
-            return pd.Series([None, outcome + '_MODELLO_NON_ATTIVO', pd.NaT, None, None, None, None])
-        return pd.Series([None, outcome, pd.NaT, None, None, None, None])
-    chosen = active.sort_values('Decorrenza').iloc[-1]
+        return pd.Series([None, outcome + '_MODELLO_NON_ATTIVO', pd.NaT, None, None, None, None, historic_partner])
+    if len(in_force_rows) > 1:
+        # Più agenti con modello attivo per lo stesso contratto: non si sceglie in silenzio.
+        return pd.Series([None, 'CONFLITTO_PARTNER', pd.NaT, None, None, None, None, None])
+    chosen = in_force_rows[0]
     return pd.Series([
         chosen['Agente'], outcome, chosen['Decorrenza'], chosen['GETTONE RES'],
-        chosen['GETTONE IVA'], chosen['RICORRENTE RES'], chosen['RICORRENTE IVA']
+        chosen['GETTONE IVA'], chosen['RICORRENTE RES'], chosen['RICORRENTE IVA'], historic_partner
     ])
 
 
-def months_inclusive(start, end):
+# Stati che danno diritto al gettone (Base e Avanzato): tutti tranne ANNULLATO e SOSPESO.
+# Nel report INSERITO equivale a IN ATTESA e viene normalizzato da clean_status().
+GETTONE_STATI_VALIDI = ['ATTIVO', 'IN ATTESA', 'IN ATTIVAZIONE', 'CHIUSO']
+STATI_NOTI = {'ATTIVO', 'ANNULLATO', 'CHIUSO', 'IN ATTIVAZIONE', 'IN ATTESA', 'SOSPESO'}
+
+# Malus per chiusura. La vita della fornitura conta solo per mese di calendario, il giorno è
+# ignorato: attivazione 1 luglio e chiusura 31 luglio = 1 mese; 15 gennaio -> 20 agosto = 8 mesi.
+# Fino a 4 mesi di vita = malus 100%; 5 e 6 mesi = 50%; oltre il sesto mese nessun malus.
+# Una chiusura senza attivazione è trattata come churn a 3 mesi (malus 100%).
+MALUS_100_FINO_A_MESI = 4
+MALUS_50_FINO_A_MESI = 6
+
+# Esclusioni per agente (colonne ESCLUDI SELF / ESCLUDI GD del file identificatori).
+SUBCHANNEL_SELF = {'', 'web'}
+SUBCHANNEL_GD = {'nenb2c', 'nenb2b'}
+
+# Bonus Churn: classi sul tasso di partenza, in decimi di punto percentuale (189 = 18,9%).
+BONUS_CLASSI = ['PLATINUM', 'GOLD', 'SILVER', 'BRONZE', 'BEGINNER']
+BONUS_LIMITI_CLASSI = [189, 229, 269, 300]
+# Micro-classi BEGINNER: (limite massimo, etichetta, miglioramento trimestrale, miglioramento annuo),
+# in decimi di punto percentuale.
+BONUS_MICRO_CLASSI = [
+    (339, '30,1%-33,9%', 7, 21),
+    (379, '34,0%-37,9%', 8, 24),
+    (419, '38,0%-41,9%', 10, 30),
+    (459, '42,0%-45,9%', 12, 36),
+    (499, '46,0%-49,9%', 17, 51),
+    (10 ** 6, '>=50,0%', 25, 75),
+]
+
+
+def clean_status(series):
+    return series.astype(str).str.strip().str.upper().replace({'INSERITO': 'IN ATTESA'})
+
+
+def is_yes(v):
+    return str(v).strip().upper() in {'SI', 'SÌ', 'S', 'YES', 'TRUE', '1', '1.0'}
+
+
+def exclusion_reason(subchannel, esclude_self, esclude_gd):
+    n = norm(subchannel)
+    if is_yes(esclude_self) and n in SUBCHANNEL_SELF:
+        return 'ESCLUSO_SELF'
+    if is_yes(esclude_gd) and n in SUBCHANNEL_GD:
+        return 'ESCLUSO_GD'
+    return None
+
+
+def months_lived(start, end):
+    # Mesi di vita contando solo il mese di calendario (estremi inclusi): luglio -> luglio = 1.
+    # Chiusura nel mese dell'attivazione = 1; chiusura in un mese precedente = 0 o negativo.
     if pd.isna(start) or pd.isna(end):
         return pd.NA
+    start = pd.Timestamp(start)
+    end = pd.Timestamp(end)
     return (end.year - start.year) * 12 + end.month - start.month + 1
+
+
+def malus_fascia(months):
+    # Mesi mancanti (chiusura senza attivazione) = churn a 3 mesi = malus 100%.
+    if pd.isna(months) or months <= MALUS_100_FINO_A_MESI:
+        return '100%', 1.0
+    if months <= MALUS_50_FINO_A_MESI:
+        return '50%', 0.5
+    return '0%', 0.0
+
+
+def churn_tenths(switch_out, activated):
+    # Cohort Churn in decimi di punto percentuale, TRONCATO (non arrotondato), con aritmetica
+    # intera per evitare errori di virgola mobile: 189 = 18,9%.
+    if pd.isna(activated) or int(activated) <= 0:
+        return None
+    return int(switch_out) * 1000 // int(activated)
+
+
+def churn_class(t):
+    for name, limit in zip(BONUS_CLASSI, BONUS_LIMITI_CLASSI):
+        if t <= limit:
+            return name
+    return 'BEGINNER'
+
+
+def micro_class(t):
+    for limit, label, d_q, d_a in BONUS_MICRO_CLASSI:
+        if t <= limit:
+            return label, d_q, d_a
+    return BONUS_MICRO_CLASSI[-1][1:]
+
+
+def consecutive_run(months):
+    # Numero di mesi consecutivi che terminano con l'ultima rilevazione.
+    months = sorted({pd.Timestamp(m) for m in months if pd.notna(m)})
+    if not months:
+        return 0
+    run = 1
+    for i in range(len(months) - 1, 0, -1):
+        if months[i - 1] == months[i] - pd.DateOffset(months=1):
+            run += 1
+        else:
+            break
+    return run
+
+
+def pooled_obs(hist, months):
+    sel = hist[hist['Mese rilevazione'].isin(months)]
+    return int(sel['Switch OUT'].sum()), int(sel['POD/PDR attivati'].sum()), len(sel)
+
+
+def agreement_year(start, month):
+    # Anno di accordo (1, 2, ...) a cui appartiene un mese: anni di 12 mesi dalla DECORRENZA BONUS CHURN
+    # (l'anno 2 inizia dal tredicesimo mese).
+    return ((month.year - start.year) * 12 + month.month - start.month) // 12 + 1
+
+
+def snapshot_six(hist, end_month):
+    # "Fotografia": media ponderata delle 6 rilevazioni mensili di Cohort Churn a 12 mesi più recenti,
+    # quelle che terminano a end_month. Senza 6 rilevazioni consecutive piene non si calcola né si stima nulla.
+    months = [end_month + pd.DateOffset(months=-k) for k in range(5, -1, -1)]
+    so, act, n = pooled_obs(hist, months)
+    return (so, act) if n == 6 and act > 0 else None
+
+
+def year_quarter_ends(start, k):
+    # Mesi di fine trimestre dell'anno di accordo k, a cui si scatta la fotografia. Nel primo anno la
+    # misurazione parte dalla decorrenza: la prima fotografia possibile richiede 6 rilevazioni (fine 6° mese).
+    y_start = start + pd.DateOffset(months=12 * (k - 1))
+    ends = [y_start + pd.DateOffset(months=3 * j + 2) for j in range(4)]
+    if k == 1:
+        ends = [e for e in ends if e >= start + pd.DateOffset(months=5)]
+    return ends
+
+
+def evaluate_partner_bonus(partner, hist, start, competence):
+    # Etichetta baseline, bonus trimestrali e bonus annuale dell'anno di accordo della competenza.
+    # Non calcola importi: cambiano da agente ad agente e si assegnano a parte.
+    # Ritorna (baseline, trimestri, annuale, info); baseline è None se non calcolabile (nessuna stima).
+    hist = hist[hist['Mese rilevazione'] <= competence]
+    k = agreement_year(start, competence)
+    y_start = start + pd.DateOffset(months=12 * (k - 1))
+    y_end = y_start + pd.DateOffset(months=11)
+    info = {'Anno di accordo': k, 'Periodo anno': f'{y_start:%m/%Y}-{y_end:%m/%Y}'}
+
+    # Baseline. Anno 1: fotografia delle prime 6 rilevazioni dalla decorrenza. Anno 2 e successivi:
+    # churn annuale dell'anno precedente = media ponderata (sul numero di contratti di ciascun trimestre)
+    # delle fotografie trimestrali di quell'anno.
+    if k == 1:
+        baseline_end = start + pd.DateOffset(months=5)
+        snap = snapshot_six(hist, baseline_end) if baseline_end <= competence else None
+        window = [baseline_end + pd.DateOffset(months=-j) for j in range(5, -1, -1)]
+        present = int(hist['Mese rilevazione'].isin(window).sum())
+        needed = 6
+        origin = 'Prime 6 rilevazioni dalla decorrenza'
+        message = (
+            f'{partner}: baseline anno 1 non calcolabile. Servono 6 rilevazioni mensili consecutive di Cohort '
+            f'Churn a 12 mesi da {window[0]:%m/%Y} a {window[-1]:%m/%Y}: presenti {present}/6. '
+            'Attendere le rilevazioni minime: nessun risultato calcolato o stimato.'
+        )
+    else:
+        prev_snaps = [
+            snapshot_six(hist, e) if e <= competence else None for e in year_quarter_ends(start, k - 1)
+        ]
+        present = sum(1 for s in prev_snaps if s is not None)
+        needed = len(prev_snaps)
+        snap = (
+            (sum(s[0] for s in prev_snaps), sum(s[1] for s in prev_snaps))
+            if present == needed else None
+        )
+        origin = f'Churn annuale anno {k - 1}'
+        baseline_end = y_start + pd.DateOffset(months=-1)
+        message = (
+            f'{partner}: baseline anno {k} non calcolabile. Coincide con il churn annuale dell\'anno {k - 1}: '
+            f'servono tutte le {needed} fotografie trimestrali dell\'anno (ciascuna con 6 rilevazioni consecutive piene): '
+            f'disponibili {present}/{needed}. Attendere le rilevazioni minime: nessun risultato calcolato o stimato.'
+        )
+    info.update({'Presenti': present, 'Attese': needed, 'Messaggio': message})
+    if snap is None:
+        return None, [], None, info
+
+    so_b, act_b = snap
+    t_base = churn_tenths(so_b, act_b)
+    base_class = churn_class(t_base)
+    if base_class == 'BEGINNER':
+        micro_label, d_q, d_a = micro_class(t_base)
+    else:
+        micro_label, d_q, d_a = None, None, None
+    baseline = {
+        'Partner': partner,
+        'Anno di accordo': k,
+        'Periodo anno': info['Periodo anno'],
+        'Origine baseline': origin,
+        'Switch OUT baseline': so_b,
+        'POD/PDR attivati baseline': act_b,
+        'Tasso di partenza (%)': t_base / 10,
+        'Classe di partenza': base_class,
+        'Micro-classe BEGINNER': micro_label,
+        'Miglioramento atteso trimestre (pp)': None if d_q is None else d_q / 10,
+        'Miglioramento atteso anno (pp)': None if d_a is None else d_a / 10,
+    }
+
+    # Trimestri dell'anno di accordo che iniziano dopo la baseline. Il tasso trimestrale è la fotografia
+    # delle 6 rilevazioni più recenti a fine trimestre.
+    quarters = []
+    missed = 0
+    for j in range(4):
+        q_start = y_start + pd.DateOffset(months=3 * j)
+        q_end = q_start + pd.DateOffset(months=2)
+        if q_start <= baseline_end or q_start > competence:
+            continue
+        snap_q = snapshot_six(hist, q_end) if q_end <= competence else None
+        t_q = churn_tenths(*snap_q) if snap_q else None
+        # Prime 4 classi: soglia = tasso di partenza. BEGINNER: tasso di partenza meno il miglioramento
+        # atteso, cumulato con quello dei trimestri precedenti non raggiunti (solo per BEGINNER).
+        target = t_base - d_q * (1 + missed) if base_class == 'BEGINNER' else t_base
+        if q_end > competence:
+            esito = 'IN CORSO'
+        elif t_q is None:
+            esito = 'RILEVAZIONI MANCANTI'
+        elif t_q <= target:
+            esito = 'BONUS TRIMESTRALE'
+            missed = 0
+        else:
+            esito = 'NESSUN BONUS'
+            if base_class == 'BEGINNER':
+                missed += 1
+        quarters.append({
+            'Partner': partner,
+            'Anno di accordo': k,
+            'Trimestre': f'T{j + 1}',
+            'Mese fotografia': q_end,
+            'Switch OUT': None if snap_q is None else snap_q[0],
+            'POD/PDR attivati': None if snap_q is None else snap_q[1],
+            'Tasso trimestrale (%)': None if t_q is None else t_q / 10,
+            'Soglia da rispettare (%)': target / 10,
+            'Classe di partenza': base_class,
+            'Classe tasso trimestrale': None if t_q is None else churn_class(t_q),
+            'Esito': esito,
+            'Da consuntivare in questa competenza': (
+                'SI' if q_end == competence and esito in ('BONUS TRIMESTRALE', 'NESSUN BONUS') else 'NO'
+            ),
+        })
+
+    # Annuale: media ponderata (somma Switch OUT / somma attivati, cioè sul numero di contratti di
+    # ciascun trimestre) delle fotografie trimestrali dell'anno di accordo.
+    annual = None
+    ends = year_quarter_ends(start, k)
+    snaps = [snapshot_six(hist, e) for e in ends if e <= competence]
+    snaps = [s for s in snaps if s is not None]
+    if snaps:
+        so_a = sum(s[0] for s in snaps)
+        act_a = sum(s[1] for s in snaps)
+        t_a = churn_tenths(so_a, act_a)
+        cls_a = churn_class(t_a)
+        target_a = None if d_a is None else t_base - d_a
+        if competence < y_end:
+            esito_a = 'IN CORSO (PROVVISORIO)'
+        elif len(snaps) < len(ends):
+            esito_a = 'RILEVAZIONI MANCANTI'
+        elif base_class != 'BEGINNER':
+            gap = BONUS_CLASSI.index(cls_a) - BONUS_CLASSI.index(base_class)
+            if cls_a == 'BEGINNER':
+                # Passaggio a BEGINNER da una delle prime 4 classi: nessun premio annuale.
+                esito_a = 'NESSUN BONUS'
+            elif gap <= 0:
+                # Stessa classe o migliore: bonus di appartenenza della classe raggiunta.
+                esito_a = 'BONUS APPARTENENZA ' + cls_a
+            else:
+                # Peggioramento (anche di più classi) ma ancora tra le prime 4: classe di atterraggio.
+                esito_a = 'BONUS APPARTENENZA ' + cls_a + ' (classe di atterraggio)'
+        elif cls_a != 'BEGINNER':
+            esito_a = 'BONUS APPARTENENZA ' + cls_a
+        elif t_a <= target_a:
+            esito_a = 'BONUS MIGLIORAMENTO ANNUALE BEGINNER ' + micro_label
+        else:
+            esito_a = 'NESSUN BONUS'
+        annual = {
+            'Partner': partner,
+            'Anno di accordo': k,
+            'Periodo anno': info['Periodo anno'],
+            'Fotografie trimestrali disponibili': len(snaps),
+            'Fotografie trimestrali attese': len(ends),
+            'Switch OUT': so_a,
+            'POD/PDR attivati': act_a,
+            'Tasso annuale (%)': t_a / 10,
+            'Target annuale BEGINNER (%)': None if target_a is None else target_a / 10,
+            'Classe di partenza': base_class,
+            'Classe tasso annuale': cls_a,
+            'Esito': esito_a,
+            'Da consuntivare in questa competenza': (
+                'SI' if competence == y_end and len(snaps) == len(ends) else 'NO'
+            ),
+        }
+    return baseline, quarters, annual, info
+
+
+def join_reasons(flags):
+    return pd.Series(
+        ['; '.join(flags.columns[row]) for row in flags.to_numpy()],
+        index=flags.index, dtype='object'
+    )
 
 
 def read_excel(upload, sheet_name=0):
@@ -160,11 +489,15 @@ if contracts_file and mapping_file:
     if missing:
         st.error('Colonne mancanti nel report: ' + ', '.join(sorted(missing)))
         st.stop()
+    if contracts.empty:
+        st.error('Il report contratti è vuoto.')
+        st.stop()
 
     if module == 'Commissioni Base':
         st.header('Commissioni Base')
         base_required = {
             'Agente', 'IDENTIFICATORI SUBCHANNEL', 'IDENTIFICATORI PROMO CODE',
+            'ESCLUDI SELF', 'ESCLUDI GD',
             'GETTONE RES', 'GETTONE IVA', 'PREMIO UTENTI ATTIVI',
             'MESI CALCOLO PREMIO DA ATTIVAZIONE', 'STORNO UTENTI CESSATI',
             'MESI CALCOLO STORNO DA ATTIVAZIONE'
@@ -192,11 +525,12 @@ if contracts_file and mapping_file:
         base_df['Mese sottoscrizione'] = base_df['Data sottoscrizione'].map(month)
         base_df['Mese attivazione'] = base_df['Data attivazione'].map(month)
         base_df['Mese chiusura'] = base_df['Data chiusura'].map(month)
-        base_df['Stato'] = base_df['Status from PoD'].astype(str).str.strip().str.upper()
+        base_df['Stato'] = clean_status(base_df['Status from PoD'])
         base_df['Subscription Name'] = base_df['Subscription Name'].astype(str).str.strip()
         base_df['Point of Delivery'] = base_df['Point of delivery: Point of delivery Name'].astype(str).str.strip()
 
         def select_base(row):
+            empty = [pd.NA] * 6
             sub_hits = base_configs[base_configs['Sub IDs'].apply(
                 lambda ids: matches_subchannel(row.get('Subchannel'), ids)
             )]
@@ -208,11 +542,20 @@ if contracts_file and mapping_file:
             # senza applicare drop_duplicates() all'intero DataFrame.
             hit_indexes = sub_hits.index.union(promo_hits.index)
             hits = base_configs.loc[hit_indexes].copy()
+            if hits.empty:
+                return pd.Series([pd.NA, 'NON_MAPPATO'] + empty)
+            # ESCLUDI SELF / ESCLUDI GD prevalgono anche sul match da Promo code.
+            reasons = hits.apply(
+                lambda r: exclusion_reason(row.get('Subchannel'), r['ESCLUDI SELF'], r['ESCLUDI GD']), axis=1
+            )
+            hits = hits[reasons.isna()]
+            if hits.empty:
+                return pd.Series([pd.NA, reasons.dropna().iloc[0]] + empty)
             agents = hits['Agente'].dropna().astype(str).unique().tolist()
             if len(agents) == 0:
-                return pd.Series([pd.NA, 'NON_MAPPATO', pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA])
+                return pd.Series([pd.NA, 'NON_MAPPATO'] + empty)
             if len(agents) > 1:
-                return pd.Series([pd.NA, 'CONFLITTO_SUBCHANNEL_PROMO', pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA])
+                return pd.Series([pd.NA, 'CONFLITTO_SUBCHANNEL_PROMO'] + empty)
             cfg = hits[hits['Agente'].astype(str) == agents[0]].iloc[0]
             return pd.Series([
                 agents[0], 'MAPPATO', cfg['GETTONE RES'], cfg['GETTONE IVA'],
@@ -220,12 +563,16 @@ if contracts_file and mapping_file:
                 cfg['STORNO UTENTI CESSATI'], cfg['MESI CALCOLO STORNO DA ATTIVAZIONE']
             ])
 
-        selected_base = base_df.apply(select_base, axis=1)
+        # Il mapping dipende solo da (Subchannel, Promo code): una volta per combinazione.
+        base_keys = ['Subchannel', 'Promo code']
+        base_combos = base_df[base_keys].drop_duplicates().reset_index(drop=True)
+        selected_base = base_combos.apply(select_base, axis=1)
         selected_base.columns = [
             'Partner', 'Esito mapping', 'Gettone RES', 'Gettone IVA',
             'Premio utenti attivi', 'Mesi premio', 'Storno utenti cessati', 'Mesi storno'
         ]
-        base_df = pd.concat([base_df, selected_base], axis=1)
+        base_combos = pd.concat([base_combos, selected_base], axis=1)
+        base_df = base_df.merge(base_combos, on=base_keys, how='left')
         base_df['Segmento'] = base_df['Customer type'].map({'Person': 'Residenziale', 'Partita IVA': 'Business'})
         base_df['Gettone base'] = base_df.apply(
             lambda r: r['Gettone RES'] if r['Customer type'] == 'Person' else (
@@ -233,16 +580,25 @@ if contracts_file and mapping_file:
             ), axis=1
         )
 
-        # Gettone base: contratti generati nel mese, esclusi gli ANNULLATO.
-        # L'esclusione vale per tutti gli agenti del modello Base.
+        # Gettone base: contratti generati nel mese di competenza con stato valido
+        # (tutti tranne ANNULLATO e SOSPESO, CHIUSO incluso). Vale per tutti gli agenti Base.
         base_gettoni = base_df[
             base_df['Partner'].notna()
             & (base_df['Mese sottoscrizione'] == competence)
-            & (base_df['Stato'] != 'ANNULLATO')
+            & base_df['Stato'].isin(GETTONE_STATI_VALIDI)
             & base_df['Gettone base'].notna()
         ].copy()
         base_gettoni['Tipo movimento'] = 'GETTONE_BASE'
         base_gettoni['Importo'] = base_gettoni['Gettone base']
+
+        # Annullati e sospesi del mese: segnalati per trasparenza, importo zero.
+        base_esclusi_stato = base_df[
+            base_df['Partner'].notna()
+            & (base_df['Mese sottoscrizione'] == competence)
+            & base_df['Stato'].isin(['ANNULLATO', 'SOSPESO'])
+        ].copy()
+        base_esclusi_stato['Tipo movimento'] = 'ESCLUSO_PER_STATO'
+        base_esclusi_stato['Importo'] = 0.0
 
         # Premio: coorte attivata X mesi prima e ancora ATTIVA nella competenza.
         base_premi = base_df[
@@ -337,15 +693,24 @@ if contracts_file and mapping_file:
                 key=f'base_{safe_partner}_{competence:%Y_%m}'
             )
 
-        base_unmapped = base_df[base_df['Esito mapping'] != 'MAPPATO'].copy()
+        # Controlli limitati ai contratti della competenza (non all'intero report).
+        base_rilevante = base_df['Mese sottoscrizione'] == competence
+        base_unmapped = base_df[
+            base_rilevante & base_df['Esito mapping'].isin(['NON_MAPPATO', 'CONFLITTO_SUBCHANNEL_PROMO'])
+        ].copy()
+        base_excl_sg = base_df[
+            base_rilevante & base_df['Esito mapping'].isin(['ESCLUSO_SELF', 'ESCLUSO_GD'])
+        ].copy()
         base_incomplete = base_df[
             base_df['Partner'].notna()
-            & (base_df['Mese sottoscrizione'] == competence)
+            & base_rilevante
             & base_df['Gettone base'].isna()
         ].copy()
         st.subheader('Controlli')
         st.write(
             f'Non mappati/conflitti: **{len(base_unmapped)}** | '
+            f'Esclusi SELF/GD: **{len(base_excl_sg)}** | '
+            f'Annullati/sospesi del mese: **{len(base_esclusi_stato)}** | '
             f'Gettoni mancanti per segmento: **{len(base_incomplete)}**'
         )
         base_export = to_excel({
@@ -354,7 +719,9 @@ if contracts_file and mapping_file:
             'Contratti del mese': base_gettoni,
             'Premio utenti attivi': base_premi,
             'Storno utenti cessati': base_storni,
+            'Annullati e sospesi': base_esclusi_stato,
             'Non mappati': base_unmapped,
+            'Esclusi SELF-GD': base_excl_sg,
             'Config incomplete': base_incomplete,
         })
         st.download_button(
@@ -366,7 +733,8 @@ if contracts_file and mapping_file:
 
     map_required = {
         'Agente', 'IDENTIFICATORI SUBCHANNEL', 'IDENTIFICATORI PROMO CODE',
-        'DECORRENZA', 'GETTONE RES', 'GETTONE IVA', 'RICORRENTE RES', 'RICORRENTE IVA'
+        'DECORRENZA', 'ESCLUDI SELF', 'ESCLUDI GD',
+        'GETTONE RES', 'GETTONE IVA', 'RICORRENTE RES', 'RICORRENTE IVA'
     }
     map_missing = map_required - set(mapping.columns)
     if map_missing:
@@ -406,7 +774,7 @@ if contracts_file and mapping_file:
     df['Mese sottoscrizione'] = df['Data sottoscrizione'].map(month)
     df['Mese attivazione'] = df['Data attivazione'].map(month)
     df['Mese chiusura'] = df['Data chiusura'].map(month)
-    df['Stato'] = df['Status from PoD'].astype(str).str.strip().str.upper()
+    df['Stato'] = clean_status(df['Status from PoD'])
     df['Subscription Name'] = df['Subscription Name'].astype(str).str.strip()
     df['Point of Delivery'] = df['Point of delivery: Point of delivery Name'].astype(str).str.strip()
     df['ID fornitura'] = df.apply(
@@ -416,12 +784,17 @@ if contracts_file and mapping_file:
     )
     df['ID contratto'] = df['ID fornitura']
 
-    selected = df.apply(lambda r: select_configuration(r, configs), axis=1)
+    # Il mapping dipende solo da (Subchannel, Promo code, mese di sottoscrizione):
+    # si calcola una volta per combinazione e si riporta su tutte le righe.
+    sel_keys = ['Subchannel', 'Promo code', 'Mese sottoscrizione']
+    sel_combos = df[sel_keys].drop_duplicates().reset_index(drop=True)
+    selected = sel_combos.apply(lambda r: select_configuration(r, configs), axis=1)
     selected.columns = [
         'Partner', 'Esito mapping', 'Decorrenza partner', 'Gettone RES',
-        'Gettone IVA', 'Ricorrente RES', 'Ricorrente IVA'
+        'Gettone IVA', 'Ricorrente RES', 'Ricorrente IVA', 'Partner storico'
     ]
-    df = pd.concat([df, selected], axis=1)
+    sel_combos = pd.concat([sel_combos, selected], axis=1)
+    df = df.merge(sel_combos, on=sel_keys, how='left')
 
     df['Segmento'] = df['Customer type'].map({'Person': 'Residenziale', 'Partita IVA': 'Business'})
     df['Gettone'] = df.apply(
@@ -449,25 +822,28 @@ if contracts_file and mapping_file:
         )
 
         # Denominatore: forniture effettivamente attivate nella coorte.
-        # ANNULLATO è escluso; la Closing Date identifica direttamente l'eventuale Switch OUT.
+        # Il partner della coorte è quello storico del mapping, indipendente dalla decorrenza del
+        # modello commissionale: la baseline si misura anche sulle coorti precedenti all'adesione.
+        # ANNULLATO è escluso; qualsiasi Closing Date nella finestra è considerata Switch OUT.
         activated = df[
-            df['Partner'].notna()
+            df['Partner storico'].notna()
             & (df['Mese attivazione'] == cohort_month)
             & (df['Stato'] != 'ANNULLATO')
             & df['ID fornitura'].ne('')
         ].copy()
+        activated['Partner coorte'] = activated['Partner storico']
         activated['È Switch OUT'] = activated['Mese chiusura'].between(
             window_start, window_end, inclusive='both'
         )
 
-        observations = activated.groupby('Partner', as_index=False).agg(
+        observations = activated.groupby('Partner coorte', as_index=False).agg(
             **{'POD/PDR attivati': ('ID contratto', 'nunique'), 'Switch OUT': ('È Switch OUT', 'sum')}
-        )
+        ).rename(columns={'Partner coorte': 'Partner'})
         observations['Mese rilevazione'] = competence
         observations['Mese coorte'] = cohort_month
-        observations['Cohort Churn'] = observations.apply(
-            lambda r: r['Switch OUT'] / r['POD/PDR attivati'] if r['POD/PDR attivati'] else pd.NA,
-            axis=1
+        observations['Cohort Churn'] = (
+            observations['Switch OUT']
+            / observations['POD/PDR attivati'].where(observations['POD/PDR attivati'] > 0)
         )
         observations = observations[
             ['Partner', 'Mese rilevazione', 'Mese coorte', 'POD/PDR attivati', 'Switch OUT', 'Cohort Churn']
@@ -503,21 +879,28 @@ if contracts_file and mapping_file:
         cohort_updated = pd.concat([old_kept, observations], ignore_index=True)
         cohort_updated = cohort_updated.sort_values(['Partner', 'Mese rilevazione']).reset_index(drop=True)
 
-        # Stato programma: servono 6 rilevazioni consolidate; nessuna baseline manuale.
-        config_status = configs.sort_values('Decorrenza').groupby('Agente', as_index=False).tail(1)
+        # Stato programma: servono 6 rilevazioni consolidate consecutive; nessuna baseline manuale.
+        # I NaT (decorrenza "no") vanno prima, così l'ultima riga è la configurazione datata più recente.
+        config_status = configs.sort_values('Decorrenza', na_position='first').groupby('Agente', as_index=False).tail(1)
+        all_partners = (
+            set(df['Partner storico'].dropna()) | set(df['Partner'].dropna())
+            | set(config_status['Agente'].dropna())
+        )
         status_rows = []
-        for partner in sorted(set(df['Partner'].dropna()) | set(config_status['Agente'].dropna())):
+        for partner in sorted(all_partners):
             hist = cohort_updated[cohort_updated['Partner'] == partner].sort_values('Mese rilevazione')
-            last6 = hist.tail(6)
             n_obs = len(hist)
-            baseline = (
-                last6['Switch OUT'].sum() / last6['POD/PDR attivati'].sum()
-                if len(last6) == 6 and last6['POD/PDR attivati'].sum() > 0 else pd.NA
+            n_consec = consecutive_run(hist['Mese rilevazione'])
+            last6 = hist.tail(6)
+            act6 = last6['POD/PDR attivati'].sum()
+            baseline_mobile = (
+                churn_tenths(last6['Switch OUT'].sum(), act6) / 10
+                if n_consec >= 6 and act6 > 0 else pd.NA
             )
             cfg = config_status[config_status['Agente'] == partner]
             configured = bool(cfg['Bonus churn attivo'].iloc[0]) if not cfg.empty else False
             start = cfg['Decorrenza bonus churn'].iloc[0] if not cfg.empty else pd.NaT
-            eligible = n_obs >= 6
+            eligible = n_consec >= 6
             active = configured and eligible and pd.notna(start) and start <= competence
             if active:
                 state = 'ATTIVO'
@@ -528,30 +911,83 @@ if contracts_file and mapping_file:
             elif configured and eligible and (pd.isna(start) or start > competence):
                 state = 'IDONEO - IN ATTESA DECORRENZA'
             else:
-                state = 'IN MATURAZIONE' if n_obs < 6 else 'IDONEO'
+                state = 'IN MATURAZIONE' if n_consec < 6 else 'IDONEO'
             status_rows.append({
                 'Partner': partner,
                 'Rilevazioni consolidate': n_obs,
-                'Rilevazioni mancanti': max(0, 6 - n_obs),
-                'Baseline ultime 6': baseline,
+                'Rilevazioni consecutive': n_consec,
+                'Rilevazioni mancanti': max(0, 6 - n_consec),
+                'Baseline mobile ultime 6 (%)': baseline_mobile,
                 'Bonus Churn configurato': 'SI' if configured else 'NO',
                 'Decorrenza Bonus Churn': start,
                 'Stato programma': state,
             })
         program_status = pd.DataFrame(status_rows)
 
+        # Classe di partenza (baseline congelata), bonus trimestrali e bonus annuale.
+        # Anni di accordo di 12 mesi dalla decorrenza (l'anno 2 parte dal 13° mese). Baseline anno 1 =
+        # prime 6 rilevazioni; anno 2+ = churn annuale dell'anno precedente. Il tasso trimestrale è la
+        # fotografia delle 6 rilevazioni più recenti a fine trimestre. Senza rilevazioni piene non si
+        # calcola né si stima nulla: si segnala di attendere.
+        baseline_rows, quarter_rows, annual_rows, waiting = [], [], [], []
+        for _, cfg in config_status.iterrows():
+            partner = cfg['Agente']
+            start = cfg['Decorrenza bonus churn']
+            if not cfg['Bonus churn attivo'] or pd.isna(start) or start > competence:
+                continue
+            hist = cohort_updated[cohort_updated['Partner'] == partner]
+            baseline, quarters, annual, info = evaluate_partner_bonus(partner, hist, start, competence)
+            if baseline is None:
+                baseline_rows.append({
+                    'Partner': partner, 'Anno di accordo': info['Anno di accordo'],
+                    'Periodo anno': info['Periodo anno'],
+                    'Rilevazioni/fotografie presenti': f"{info['Presenti']}/{info['Attese']}",
+                    'Classe di partenza': 'ATTENDERE: baseline non calcolabile, nessuna stima effettuata',
+                })
+                waiting.append(info['Messaggio'])
+                continue
+            baseline_rows.append(baseline)
+            quarter_rows.extend(quarters)
+            if annual:
+                annual_rows.append(annual)
+        baseline_df = pd.DataFrame(baseline_rows)
+        quarters_df = pd.DataFrame(quarter_rows)
+        annual_df = pd.DataFrame(annual_rows)
+
         st.subheader('Rilevazione corrente')
         st.dataframe(observations, use_container_width=True)
         st.subheader('Stato partner')
         st.dataframe(program_status, use_container_width=True)
+        for w_message in waiting:
+            st.warning(w_message)
+        if not baseline_df.empty:
+            st.subheader('Classe di partenza')
+            st.dataframe(baseline_df, use_container_width=True)
+        if not quarters_df.empty:
+            st.subheader('Bonus trimestrali: etichetta ed esito')
+            st.dataframe(quarters_df, use_container_width=True)
+        if not annual_df.empty:
+            st.subheader('Bonus annuale: etichetta ed esito')
+            st.dataframe(annual_df, use_container_width=True)
+        st.caption(
+            'Tassi con un decimale troncato (non arrotondato). Gli importi dei bonus non sono calcolati: '
+            'dipendono dall\'agente e si assegnano a parte in base a classe ed esito.'
+        )
 
         cohort_export = to_excel({'Registro storico Cohort Churn': cohort_updated})
-        detail_export = to_excel({
+        detail_sheets = {
             'Rilevazione corrente': observations,
             'Stato partner': program_status,
-            'Dettaglio coorte': activated,
-            'Registro storico': cohort_updated,
-        })
+        }
+        if not baseline_df.empty:
+            detail_sheets['Classe di partenza'] = baseline_df
+        if not quarters_df.empty:
+            detail_sheets['Bonus trimestrali'] = quarters_df
+        if not annual_df.empty:
+            detail_sheets['Bonus annuali'] = annual_df
+        detail_sheets['Dettaglio coorte'] = activated
+        detail_sheets['Registro storico'] = cohort_updated
+        detail_export = to_excel(detail_sheets)
         d1, d2 = st.columns(2)
         with d1:
             st.download_button(
@@ -567,25 +1003,26 @@ if contracts_file and mapping_file:
             )
         st.stop()
 
-    # Gettone Avanzato: gli ANNULLATO sono sempre esclusi dal calcolo.
+    # Gettone Avanzato: stati validi = tutti tranne ANNULLATO e SOSPESO (CHIUSO incluso).
+    in_competence = df['Mese sottoscrizione'] == competence
     initial = df[
         eligible_scope
-        & (df['Mese sottoscrizione'] == competence)
-        & (df['Stato'] != 'ANNULLATO')
-        & df['Stato'].isin(['IN ATTIVAZIONE', 'ATTIVO', 'CHIUSO'])
+        & in_competence
+        & df['Stato'].isin(GETTONE_STATI_VALIDI)
     ].copy()
     initial['Tipo movimento'] = 'GETTONE_INIZIALE'
     initial['Importo'] = initial['Gettone']
 
-    cancelled = df[
-        eligible_scope
-        & (df['Mese sottoscrizione'] == competence)
-        & (df['Stato'] == 'ANNULLATO')
-    ].copy()
+    cancelled = df[eligible_scope & in_competence & (df['Stato'] == 'ANNULLATO')].copy()
     cancelled['Tipo movimento'] = 'ANNULLAMENTO_SEGNALATO'
     cancelled['Importo'] = 0.0
 
-    # Ricorrente dal primo mese pieno. Il mese della chiusura è escluso perché non è completo.
+    suspended = df[eligible_scope & in_competence & (df['Stato'] == 'SOSPESO')].copy()
+    suspended['Tipo movimento'] = 'SOSPESO_SEGNALATO'
+    suspended['Importo'] = 0.0
+
+    # Ricorrente dal primo mese pieno, solo per contratti ATTIVO. Il mese della chiusura è escluso
+    # perché non è completo (una chiusura già pianificata non toglie il ricorrente dei mesi precedenti).
     df['Mese decorrenza mini-gettone'] = df['Data attivazione'].apply(
         lambda d: pd.NaT if pd.isna(d) else (
             d.to_period('M').to_timestamp()
@@ -595,7 +1032,7 @@ if contracts_file and mapping_file:
     )
     recurring = df[
         eligible_scope
-        & (df['Stato'] != 'ANNULLATO')
+        & (df['Stato'] == 'ATTIVO')
         & df['Mese decorrenza mini-gettone'].notna()
         & (df['Mese decorrenza mini-gettone'] <= competence)
         & (df['Mese chiusura'].isna() | (competence < df['Mese chiusura']))
@@ -604,30 +1041,26 @@ if contracts_file and mapping_file:
     recurring['Importo'] = recurring['Ricorrente']
 
     # Ogni chiusura appartiene a una sola competenza: il mese della Closing Date.
-    churn = df[
+    # Il malus riguarda solo contratti che avrebbero preso il gettone (stato valido, quindi non ANNULLATO).
+    # Conta solo il mese di calendario; una chiusura senza attivazione vale come churn a 3 mesi (100%).
+    churn_scope = (
         eligible_scope
+        & df['Stato'].isin(GETTONE_STATI_VALIDI)
         & (df['Mese chiusura'] == competence)
-        & df['Data attivazione'].notna()
-    ].copy()
-    churn['Mesi attivi'] = churn.apply(
-        lambda r: months_inclusive(r['Mese attivazione'], r['Mese chiusura']), axis=1
     )
-
-    def malus(row):
-        m = row['Mesi attivi']
-        if pd.isna(m) or m <= 4:
-            return '100%', -float(row['Gettone'])
-        if m <= 6:
-            return '50%', -float(row['Gettone']) * 0.5
-        return '0%', 0.0
-
-    if churn.empty:
-        churn['Fascia malus'] = pd.Series(dtype='object')
-        churn['Importo'] = pd.Series(dtype='float64')
-    else:
-        churn[['Fascia malus', 'Importo']] = churn.apply(
-            lambda r: pd.Series(malus(r)), axis=1
-        )
+    churn = df[churn_scope].copy()
+    churn['Mesi di vita'] = [
+        months_lived(a, c) for a, c in zip(churn['Data attivazione'], churn['Data chiusura'])
+    ]
+    fasce = [malus_fascia(m) for m in churn['Mesi di vita']]
+    churn['Fascia malus'] = [f for f, _ in fasce]
+    churn['Motivo malus'] = [
+        'Chiusura senza attivazione (trattata come churn a 3 mesi)' if pd.isna(m)
+        else ("Chiusura prima dell'attivazione" if m <= 0 else f'Chiusura al mese {int(m)} di vita')
+        for m in churn['Mesi di vita']
+    ]
+    churn['Importo'] = [-float(g) * share for (_, share), g in zip(fasce, churn['Gettone'])]
+    no_activation = churn[churn['Data attivazione'].isna()].copy()
     malus_new = churn[churn['Importo'] != 0].copy()
     malus_new['Tipo movimento'] = 'MALUS_CHURN'
 
@@ -652,21 +1085,31 @@ if contracts_file and mapping_file:
         ['Partner', 'GETTONE_INIZIALE', 'RICORRENTE', 'MALUS_CHURN', 'TOTALE_DA_PAGARE']
     ].sort_values('Partner')
 
-    unmapped = df[df['Esito mapping'].isin([
-        'NON_MAPPATO', 'NON_MAPPATO_BILLOO_PROMO_NON_SUFFICIENTE', 'CONFLITTO_SUBCHANNEL_PROMO'
+    # Controlli limitati ai contratti rilevanti per la competenza (sottoscritti o chiusi nel mese),
+    # non all'intero report.
+    rilevante = in_competence | (df['Mese chiusura'] == competence)
+    unmapped = df[rilevante & df['Esito mapping'].isin([
+        'NON_MAPPATO', 'NON_MAPPATO_BILLOO_PROMO_NON_SUFFICIENTE',
+        'CONFLITTO_SUBCHANNEL_PROMO', 'CONFLITTO_PARTNER'
     ])].copy()
-    excluded = df[df['Esito mapping'].str.contains('MODELLO_NON_ATTIVO', na=False)].copy()
+    excluded = df[rilevante & df['Esito mapping'].str.contains('MODELLO_NON_ATTIVO', na=False)].copy()
+    excluded_sg = df[rilevante & df['Esito mapping'].isin(['ESCLUSO_SELF', 'ESCLUSO_GD'])].copy()
+
     duplicate_supply = df['ID fornitura'].ne('') & df.duplicated('ID fornitura', keep=False)
-    anomalies = df[
-        df['Data sottoscrizione'].isna()
-        | df['Segmento'].isna()
-        | df['Point of Delivery'].eq('')
-        | ((df['Stato'] != 'ANNULLATO') & df['Data attivazione'].isna())
-        | (df['Data chiusura'].notna() & df['Data attivazione'].isna())
-        | (df['Data chiusura'].notna() & (df['Data chiusura'] < df['Data attivazione']))
-        | duplicate_supply
-        | df['Stato'].isin(['IN ATTESA', 'SOSPESO'])
-    ].copy()
+    anomaly_flags = pd.DataFrame({
+        'Data sottoscrizione mancante': df['Data sottoscrizione'].isna(),
+        'Segmento non riconosciuto': df['Segmento'].isna(),
+        'POD/PDR mancante': df['Point of Delivery'].eq(''),
+        'Attivazione mancante': (df['Stato'] != 'ANNULLATO') & df['Data attivazione'].isna(),
+        'Chiusura senza attivazione': df['Data chiusura'].notna() & df['Data attivazione'].isna(),
+        "Chiusura prima dell'attivazione": df['Data chiusura'].notna() & (df['Data chiusura'] < df['Data attivazione']),
+        'ID fornitura duplicato': duplicate_supply,
+        'Stato non riconosciuto': ~df['Stato'].isin(STATI_NOTI),
+        'CHIUSO senza Closing date': (df['Stato'] == 'CHIUSO') & df['Data chiusura'].isna(),
+    }, index=df.index)
+    anomaly_scope = rilevante | (df['Partner'].notna() & (df['Stato'] == 'ATTIVO')) | df['Data sottoscrizione'].isna()
+    anomalies = df[anomaly_scope & anomaly_flags.any(axis=1)].copy()
+    anomalies['Motivi anomalia'] = join_reasons(anomaly_flags.loc[anomalies.index])
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric('Gettoni iniziali', f"€ {initial['Importo'].sum():,.2f}")
@@ -679,10 +1122,18 @@ if contracts_file and mapping_file:
     st.subheader('Controlli')
     st.write(
         f'Non mappati/conflitti: **{len(unmapped)}** | '
+        f'Esclusi SELF/GD: **{len(excluded_sg)}** | '
         f'Partner con modello non attivo: **{len(excluded)}** | '
+        f'Sospesi del mese: **{len(suspended)}** | '
         f'Anomalie dati: **{len(anomalies)}** | '
+        f'Chiusure senza attivazione (incluse nei malus al 100%): **{len(no_activation)}** | '
         f'Configurazioni incomplete: **{len(invalid_configs)}** | '
         f'Malus della competenza: **{len(malus_new)}**'
+    )
+    st.caption(
+        f'Malus (conta solo il mese di calendario, non il giorno): fino a {MALUS_100_FINO_A_MESI} mesi di vita = 100%; '
+        f'mesi {MALUS_100_FINO_A_MESI + 1}-{MALUS_50_FINO_A_MESI} = 50%; oltre il {MALUS_50_FINO_A_MESI}° mese nessun malus. '
+        'Chiusure senza attivazione = churn a 3 mesi = 100%.'
     )
 
     export = to_excel({
@@ -690,9 +1141,12 @@ if contracts_file and mapping_file:
         'Movimenti': movements,
         'Gettoni iniziali': initial,
         'Annullamenti': cancelled,
+        'Sospesi': suspended,
         'Ricorrenti': recurring,
         'Malus del mese': malus_new,
+        'Chiusure senza attivazione': no_activation,
         'Non mappati': unmapped,
+        'Esclusi SELF-GD': excluded_sg,
         'Partner esclusi': excluded,
         'Anomalie': anomalies,
         'Config incomplete': invalid_configs,
