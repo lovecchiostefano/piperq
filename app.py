@@ -66,6 +66,18 @@ def configuration_candidates(row, configs):
     sub_hits = configs[configs['Sub IDs'].apply(lambda ids: matches_subchannel(row.get('Subchannel'), ids))]
     promo_hits = configs[configs['Promo IDs'].apply(lambda ids: contains_promo(row.get('Promo code'), ids))]
 
+    # ESCLUDI SELF/GD deve essere applicato ai candidati prima di valutare i conflitti.
+    # In questo modo un agente non ammissibile per il Subchannel corrente non genera
+    # un falso conflitto con un altro agente valido.
+    sub_hits = sub_hits[sub_hits.apply(
+        lambda cfg: exclusion_reason(row.get('Subchannel'), cfg.get('ESCLUDI SELF'), cfg.get('ESCLUDI GD')) is None,
+        axis=1,
+    )]
+    promo_hits = promo_hits[promo_hits.apply(
+        lambda cfg: exclusion_reason(row.get('Subchannel'), cfg.get('ESCLUDI SELF'), cfg.get('ESCLUDI GD')) is None,
+        axis=1,
+    )]
+
     # Se entrambi i criteri trovano configurazioni commerciali diverse, blocca il record.
     if not sub_hits.empty and not promo_hits.empty:
         sub_gruppi = set(sub_hits['Gruppo mapping'])
@@ -235,194 +247,179 @@ def consecutive_run(months):
 
 
 def pooled_obs(hist, months):
-    sel = hist[hist['Mese rilevazione'].isin(months)]
+    months = [month(m) for m in months]
+    sel = hist[hist['Mese rilevazione'].isin(months)].copy()
     return int(sel['Switch OUT'].sum()), int(sel['POD/PDR attivati'].sum()), len(sel)
 
 
-def agreement_year(start, month):
-    # Anno di accordo (1, 2, ...) a cui appartiene un mese: anni di 12 mesi dalla DECORRENZA BONUS CHURN
-    # (l'anno 2 inizia dal tredicesimo mese).
-    return ((month.year - start.year) * 12 + month.month - start.month) // 12 + 1
+def latest_six_before(hist, cutoff):
+    """Ultime 6 rilevazioni mensili disponibili prima del periodo analizzato."""
+    eligible = hist[hist['Mese rilevazione'] < month(cutoff)].sort_values('Mese rilevazione')
+    if len(eligible) < 6:
+        return None, eligible.tail(6)
+    six = eligible.tail(6).copy()
+    if six['POD/PDR attivati'].sum() <= 0:
+        return None, six
+    return (int(six['Switch OUT'].sum()), int(six['POD/PDR attivati'].sum())), six
 
 
-def snapshot_six(hist, end_month):
-    # "Fotografia": media ponderata delle 6 rilevazioni mensili di Cohort Churn a 12 mesi più recenti,
-    # quelle che terminano a end_month. Senza 6 rilevazioni consecutive piene non si calcola né si stima nulla.
-    months = [end_month + pd.DateOffset(months=-k) for k in range(5, -1, -1)]
-    so, act, n = pooled_obs(hist, months)
-    return (so, act) if n == 6 and act > 0 else None
+def program_months(start, offset, count):
+    start = month(start)
+    return [start + pd.DateOffset(months=offset + i) for i in range(count)]
 
 
-def year_quarter_ends(start, k):
-    # Mesi di fine trimestre dell'anno di accordo k, a cui si scatta la fotografia. Nel primo anno la
-    # misurazione parte dalla decorrenza: la prima fotografia possibile richiede 6 rilevazioni (fine 6° mese).
-    y_start = start + pd.DateOffset(months=12 * (k - 1))
-    ends = [y_start + pd.DateOffset(months=3 * j + 2) for j in range(4)]
-    if k == 1:
-        ends = [e for e in ends if e >= start + pd.DateOffset(months=5)]
-    return ends
+def format_month_year(value):
+    return '' if pd.isna(value) else pd.Timestamp(value).strftime('%m/%Y')
 
 
-def evaluate_partner_bonus(partner, hist, start, competence):
-    # Etichetta baseline, bonus trimestrali e bonus annuale dell'anno di accordo della competenza.
-    # Non calcola importi: cambiano da agente ad agente e si assegnano a parte.
-    # Ritorna (baseline, trimestri, annuale, info); baseline è None se non calcolabile (nessuna stima).
-    hist = hist[hist['Mese rilevazione'] <= competence]
-    k = agreement_year(start, competence)
-    y_start = start + pd.DateOffset(months=12 * (k - 1))
-    y_end = y_start + pd.DateOffset(months=11)
-    info = {'Anno di accordo': k, 'Periodo anno': f'{y_start:%m/%Y}-{y_end:%m/%Y}'}
+def evaluate_partner_bonus(partner, hist, start, available_end):
+    """Valuta un unico ciclo annuale di 12 mesi dalla decorrenza Bonus Churn.
 
-    # Baseline. Anno 1: fotografia delle prime 6 rilevazioni dalla decorrenza. Anno 2 e successivi:
-    # churn annuale dell'anno precedente = media ponderata (sul numero di contratti di ciascun trimestre)
-    # delle fotografie trimestrali di quell'anno.
-    if k == 1:
-        baseline_end = start + pd.DateOffset(months=5)
-        snap = snapshot_six(hist, baseline_end) if baseline_end <= competence else None
-        window = [baseline_end + pd.DateOffset(months=-j) for j in range(5, -1, -1)]
-        present = int(hist['Mese rilevazione'].isin(window).sum())
-        needed = 6
-        origin = 'Prime 6 rilevazioni dalla decorrenza'
-        message = (
-            f'{partner}: baseline anno 1 non calcolabile. Servono 6 rilevazioni mensili consecutive di Cohort '
-            f'Churn a 12 mesi da {window[0]:%m/%Y} a {window[-1]:%m/%Y}: presenti {present}/6. '
-            'Attendere le rilevazioni minime: nessun risultato calcolato o stimato.'
-        )
+    La baseline usa le 6 rilevazioni più recenti precedenti alla decorrenza.
+    I trimestri sono relativi alla decorrenza del partner, non ai trimestri solari.
+    L'annuale viene calcolato soltanto quando sono disponibili tutti i 12 mesi.
+    """
+    start = month(start)
+    available_end = month(available_end)
+    hist = hist.sort_values('Mese rilevazione').copy()
+    program_end = start + pd.DateOffset(months=11)
+    if pd.isna(start):
+        return None, [], None, {
+            'Partner': partner, 'Stato': 'DECORRENZA MANCANTE', 'Mesi consolidati': 0,
+            'Progressione': 0.0,
+            'Messaggio': 'Decorrenza Bonus Churn non valorizzata.'
+        }
+    if available_end < start:
+        months_available = []
     else:
-        prev_snaps = [
-            snapshot_six(hist, e) if e <= competence else None for e in year_quarter_ends(start, k - 1)
-        ]
-        present = sum(1 for s in prev_snaps if s is not None)
-        needed = len(prev_snaps)
-        snap = (
-            (sum(s[0] for s in prev_snaps), sum(s[1] for s in prev_snaps))
-            if present == needed else None
-        )
-        origin = f'Churn annuale anno {k - 1}'
-        baseline_end = y_start + pd.DateOffset(months=-1)
-        message = (
-            f'{partner}: baseline anno {k} non calcolabile. Coincide con il churn annuale dell\'anno {k - 1}: '
-            f'servono tutte le {needed} fotografie trimestrali dell\'anno (ciascuna con 6 rilevazioni consecutive piene): '
-            f'disponibili {present}/{needed}. Attendere le rilevazioni minime: nessun risultato calcolato o stimato.'
-        )
-    info.update({'Presenti': present, 'Attese': needed, 'Messaggio': message})
-    if snap is None:
-        return None, [], None, info
+        months_available = program_months(start, 0, min(12, ((available_end.year-start.year)*12 + available_end.month-start.month + 1)))
+    present_program = hist[hist['Mese rilevazione'].isin(months_available)]['Mese rilevazione'].nunique()
+    progress = min(present_program, 12) / 12
 
-    so_b, act_b = snap
-    t_base = churn_tenths(so_b, act_b)
+    snap, baseline_rows = latest_six_before(hist, start)
+    if snap is None:
+        return None, [], None, {
+            'Partner': partner,
+            'Stato': 'STORICO INSUFFICIENTE',
+            'Mesi consolidati': present_program,
+            'Progressione': progress,
+            'Messaggio': (
+                f'{partner}: servono almeno 6 rilevazioni mensili di Cohort Churn a 12 mesi '
+                f'precedenti alla decorrenza {start:%m/%Y}; disponibili {len(baseline_rows)}/6. '
+                'Nessuna classe o idoneità viene calcolata.'
+            )
+        }
+
+    so_base, act_base = snap
+    t_base = churn_tenths(so_base, act_base)
     base_class = churn_class(t_base)
+    micro_label = d_q = d_a = None
     if base_class == 'BEGINNER':
         micro_label, d_q, d_a = micro_class(t_base)
-    else:
-        micro_label, d_q, d_a = None, None, None
+
     baseline = {
         'Partner': partner,
-        'Anno di accordo': k,
-        'Periodo anno': info['Periodo anno'],
-        'Origine baseline': origin,
-        'Switch OUT baseline': so_b,
-        'POD/PDR attivati baseline': act_b,
-        'Tasso di partenza (%)': t_base / 10,
+        'Decorrenza': format_month_year(start),
+        'Periodo baseline': (
+            f"{baseline_rows['Mese rilevazione'].min():%m/%Y}-"
+            f"{baseline_rows['Mese rilevazione'].max():%m/%Y}"
+        ),
+        'Rilevazioni utilizzate': len(baseline_rows),
+        'Switch OUT': so_base,
+        'POD/PDR attivati': act_base,
+        'Cohort Churn di partenza (%)': t_base / 10,
         'Classe di partenza': base_class,
         'Micro-classe BEGINNER': micro_label,
-        'Miglioramento atteso trimestre (pp)': None if d_q is None else d_q / 10,
-        'Miglioramento atteso anno (pp)': None if d_a is None else d_a / 10,
+        'Obiettivo trimestrale standard (p.p.)': None if d_q is None else d_q / 10,
+        'Obiettivo annuale (p.p.)': None if d_a is None else d_a / 10,
     }
 
-    # Trimestri dell'anno di accordo che iniziano dopo la baseline. Il tasso trimestrale è la fotografia
-    # delle 6 rilevazioni più recenti a fine trimestre.
     quarters = []
     missed = 0
-    for j in range(4):
-        q_start = y_start + pd.DateOffset(months=3 * j)
-        q_end = q_start + pd.DateOffset(months=2)
-        if q_start <= baseline_end or q_start > competence:
+    for q in range(1, 5):
+        q_months = program_months(start, (q - 1) * 3, 3)
+        so_q, act_q, n_q = pooled_obs(hist, q_months)
+        if n_q < 3 or act_q <= 0:
             continue
-        snap_q = snapshot_six(hist, q_end) if q_end <= competence else None
-        t_q = churn_tenths(*snap_q) if snap_q else None
-        # Prime 4 classi: soglia = tasso di partenza. BEGINNER: tasso di partenza meno il miglioramento
-        # atteso, cumulato con quello dei trimestri precedenti non raggiunti (solo per BEGINNER).
-        target = t_base - d_q * (1 + missed) if base_class == 'BEGINNER' else t_base
-        if q_end > competence:
-            esito = 'IN CORSO'
-        elif t_q is None:
-            esito = 'RILEVAZIONI MANCANTI'
-        elif t_q <= target:
-            esito = 'BONUS TRIMESTRALE'
+        t_q = churn_tenths(so_q, act_q)
+        cumulative_steps = 1 + missed if base_class == 'BEGINNER' else 0
+        target = t_base - d_q * cumulative_steps if base_class == 'BEGINNER' else t_base
+        if t_q <= target:
+            esito = 'IDONEO'
             missed = 0
         else:
-            esito = 'NESSUN BONUS'
+            esito = 'NON IDONEO'
             if base_class == 'BEGINNER':
                 missed += 1
         quarters.append({
             'Partner': partner,
-            'Anno di accordo': k,
-            'Trimestre': f'T{j + 1}',
-            'Mese fotografia': q_end,
-            'Switch OUT': None if snap_q is None else snap_q[0],
-            'POD/PDR attivati': None if snap_q is None else snap_q[1],
-            'Tasso trimestrale (%)': None if t_q is None else t_q / 10,
+            'Trimestre': f'Q{q}',
+            'Periodo': f'{q_months[0]:%m/%Y}-{q_months[-1]:%m/%Y}',
+            'Stato': 'COMPLETATO',
+            'Switch OUT': so_q,
+            'POD/PDR attivati': act_q,
+            'Churn iniziale (%)': t_base / 10,
+            'Churn rilevato (%)': t_q / 10,
+            'Target trimestre (p.p.)': None if base_class != 'BEGINNER' else d_q * cumulative_steps / 10,
             'Soglia da rispettare (%)': target / 10,
             'Classe di partenza': base_class,
-            'Classe tasso trimestrale': None if t_q is None else churn_class(t_q),
-            'Esito': esito,
-            'Da consuntivare in questa competenza': (
-                'SI' if q_end == competence and esito in ('BONUS TRIMESTRALE', 'NESSUN BONUS') else 'NO'
-            ),
+            'Micro-classe di partenza': micro_label,
+            'Idoneità': esito,
         })
 
-    # Annuale: media ponderata (somma Switch OUT / somma attivati, cioè sul numero di contratti di
-    # ciascun trimestre) delle fotografie trimestrali dell'anno di accordo.
     annual = None
-    ends = year_quarter_ends(start, k)
-    snaps = [snapshot_six(hist, e) for e in ends if e <= competence]
-    snaps = [s for s in snaps if s is not None]
-    if snaps:
-        so_a = sum(s[0] for s in snaps)
-        act_a = sum(s[1] for s in snaps)
-        t_a = churn_tenths(so_a, act_a)
-        cls_a = churn_class(t_a)
-        target_a = None if d_a is None else t_base - d_a
-        if competence < y_end:
-            esito_a = 'IN CORSO (PROVVISORIO)'
-        elif len(snaps) < len(ends):
-            esito_a = 'RILEVAZIONI MANCANTI'
-        elif base_class != 'BEGINNER':
-            gap = BONUS_CLASSI.index(cls_a) - BONUS_CLASSI.index(base_class)
-            if cls_a == 'BEGINNER':
-                # Passaggio a BEGINNER da una delle prime 4 classi: nessun premio annuale.
-                esito_a = 'NESSUN BONUS'
-            elif gap <= 0:
-                # Stessa classe o migliore: bonus di appartenenza della classe raggiunta.
-                esito_a = 'BONUS APPARTENENZA ' + cls_a
+    annual_program_months = program_months(start, 0, 12)
+    so_year, act_year, n_year = pooled_obs(hist, annual_program_months)
+    if n_year == 12 and act_year > 0:
+        if base_class != 'BEGINNER':
+            t_year = churn_tenths(so_year, act_year)
+            cls_year = churn_class(t_year)
+            if cls_year == 'BEGINNER':
+                eligibility = 'NON IDONEO - ATTERRAGGIO IN BEGINNER'
             else:
-                # Peggioramento (anche di più classi) ma ancora tra le prime 4: classe di atterraggio.
-                esito_a = 'BONUS APPARTENENZA ' + cls_a + ' (classe di atterraggio)'
-        elif cls_a != 'BEGINNER':
-            esito_a = 'BONUS APPARTENENZA ' + cls_a
-        elif t_a <= target_a:
-            esito_a = 'BONUS MIGLIORAMENTO ANNUALE BEGINNER ' + micro_label
+                gap = BONUS_CLASSI.index(cls_year) - BONUS_CLASSI.index(base_class)
+                eligibility = (
+                    'IDONEO - PREMIO APPARTENENZA ' + cls_year
+                    if gap <= 1 else 'NON IDONEO - PEGGIORAMENTO OLTRE UNA CLASSE'
+                )
+            method = '12 mesi del programma ponderati'
+            annual_target = None
         else:
-            esito_a = 'NESSUN BONUS'
+            six = hist[hist['Mese rilevazione'].isin(annual_program_months[-6:])].sort_values('Mese rilevazione')
+            so_year = int(six['Switch OUT'].sum())
+            act_year = int(six['POD/PDR attivati'].sum())
+            t_year = churn_tenths(so_year, act_year)
+            cls_year = churn_class(t_year)
+            annual_target = (t_base - d_a) / 10
+            if cls_year != 'BEGINNER':
+                eligibility = 'IDONEO - PREMIO APPARTENENZA ' + cls_year
+            elif t_year <= t_base - d_a:
+                eligibility = 'IDONEO - PREMIO MIGLIORAMENTO ANNUALE ' + micro_label
+            else:
+                eligibility = 'NON IDONEO - TARGET ANNUALE NON RAGGIUNTO'
+            method = 'Ultime 6 rilevazioni del ciclo annuale'
         annual = {
             'Partner': partner,
-            'Anno di accordo': k,
-            'Periodo anno': info['Periodo anno'],
-            'Fotografie trimestrali disponibili': len(snaps),
-            'Fotografie trimestrali attese': len(ends),
-            'Switch OUT': so_a,
-            'POD/PDR attivati': act_a,
-            'Tasso annuale (%)': t_a / 10,
-            'Target annuale BEGINNER (%)': None if target_a is None else target_a / 10,
-            'Classe di partenza': base_class,
-            'Classe tasso annuale': cls_a,
-            'Esito': esito_a,
-            'Da consuntivare in questa competenza': (
-                'SI' if competence == y_end and len(snaps) == len(ends) else 'NO'
-            ),
+            'Periodo': f'{annual_program_months[0]:%m/%Y}-{annual_program_months[-1]:%m/%Y}',
+            'Stato': 'COMPLETATO',
+            'Metodo': method,
+            'Switch OUT': so_year,
+            'POD/PDR attivati': act_year,
+            'Churn iniziale (%)': t_base / 10,
+            'Churn rilevato (%)': t_year / 10,
+            'Target annuale (%)': annual_target,
+            'Idoneità': eligibility,
+            'Nuova classe': cls_year,
         }
-    return baseline, quarters, annual, info
+
+    return baseline, quarters, annual, {
+        'Partner': partner,
+        'Stato': 'IN CORSO' if present_program < 12 else 'COMPLETATO',
+        'Mesi consolidati': present_program,
+        'Progressione': progress,
+        'Fine ciclo': format_month_year(program_end),
+        'Messaggio': ''
+    }
 
 
 def join_reasons(flags):
@@ -453,17 +450,22 @@ def to_excel(sheets):
 
 
 MONTH_OPTIONS = pd.period_range('2025-01', '2032-12', freq='M').astype(str).tolist()
+YEAR_OPTIONS = list(range(2025, 2033))
 with st.sidebar:
     module = st.radio(
         'Funzione',
         ['Commissioni Base', 'Commissioni Avanzato', 'Bonus Churn - rilevazioni e idoneità']
     )
-    competence_label = st.selectbox(
-        'Mese di competenza / rilevazione',
-        MONTH_OPTIONS,
-        index=MONTH_OPTIONS.index(DEFAULT_COMPETENCE.strftime('%Y-%m')),
-    )
-    competence = pd.Timestamp(f'{competence_label}-01')
+    if module == 'Bonus Churn - rilevazioni e idoneità':
+        # La vista Bonus Churn è unica e determina automaticamente lo stato di ogni partner.
+        competence = pd.Timestamp.today().to_period('M').to_timestamp()
+    else:
+        competence_label = st.selectbox(
+            'Mese di competenza',
+            MONTH_OPTIONS,
+            index=MONTH_OPTIONS.index(DEFAULT_COMPETENCE.strftime('%Y-%m')),
+        )
+        competence = pd.Timestamp(f'{competence_label}-01')
     st.info('Decorrenze, importi e adesione al Bonus Churn sono letti dal file identificatori.')
 
 contracts_file = st.file_uploader('1. Carica report contratti', type='xlsx')
@@ -812,42 +814,11 @@ if contracts_file and mapping_file:
     eligible_scope = df['Partner'].notna() & df['Gettone'].notna() & df['Ricorrente'].notna()
 
     if module == 'Bonus Churn - rilevazioni e idoneità':
-        st.header('Bonus Churn - rilevazioni consolidate e idoneità')
-        cohort_month = competence - pd.DateOffset(months=13)
-        window_start = cohort_month + pd.DateOffset(months=1)
-        window_end = cohort_month + pd.DateOffset(months=12)
-        st.info(
-            f'Rilevazione {competence:%Y-%m}: coorte attivata in {cohort_month:%Y-%m}; '
-            f'Switch OUT conteggiati da {window_start:%Y-%m} a {window_end:%Y-%m} inclusi.'
+        st.header('Bonus Churn')
+        st.caption(
+            'Il percorso annuale di ogni agente è calcolato automaticamente dalla relativa '
+            'DECORRENZA BONUS CHURN. Le date sono mostrate solo come mese/anno.'
         )
-
-        # Denominatore: forniture effettivamente attivate nella coorte.
-        # Il partner della coorte è quello storico del mapping, indipendente dalla decorrenza del
-        # modello commissionale: la baseline si misura anche sulle coorti precedenti all'adesione.
-        # ANNULLATO è escluso; qualsiasi Closing Date nella finestra è considerata Switch OUT.
-        activated = df[
-            df['Partner storico'].notna()
-            & (df['Mese attivazione'] == cohort_month)
-            & (df['Stato'] != 'ANNULLATO')
-            & df['ID fornitura'].ne('')
-        ].copy()
-        activated['Partner coorte'] = activated['Partner storico']
-        activated['È Switch OUT'] = activated['Mese chiusura'].between(
-            window_start, window_end, inclusive='both'
-        )
-
-        observations = activated.groupby('Partner coorte', as_index=False).agg(
-            **{'POD/PDR attivati': ('ID contratto', 'nunique'), 'Switch OUT': ('È Switch OUT', 'sum')}
-        ).rename(columns={'Partner coorte': 'Partner'})
-        observations['Mese rilevazione'] = competence
-        observations['Mese coorte'] = cohort_month
-        observations['Cohort Churn'] = (
-            observations['Switch OUT']
-            / observations['POD/PDR attivati'].where(observations['POD/PDR attivati'] > 0)
-        )
-        observations = observations[
-            ['Partner', 'Mese rilevazione', 'Mese coorte', 'POD/PDR attivati', 'Switch OUT', 'Cohort Churn']
-        ]
 
         cohort_cols = ['Partner', 'Mese rilevazione', 'Mese coorte', 'POD/PDR attivati', 'Switch OUT', 'Cohort Churn']
         if cohort_ledger_file:
@@ -870,137 +841,148 @@ if contracts_file and mapping_file:
             st.dataframe(cohort_ledger[duplicate_existing], use_container_width=True)
             st.stop()
 
-        # La rilevazione corrente sostituisce l'eventuale versione dello stesso partner/mese.
-        current_keys = set(zip(observations['Partner'], observations['Mese rilevazione']))
-        keep_old = ~cohort_ledger.apply(
-            lambda r: (r['Partner'], r['Mese rilevazione']) in current_keys, axis=1
-        ) if not cohort_ledger.empty else pd.Series(dtype=bool)
-        old_kept = cohort_ledger[keep_old].copy() if not cohort_ledger.empty else cohort_ledger.copy()
-        cohort_updated = pd.concat([old_kept, observations], ignore_index=True)
+        # Il mese massimo del report è il limite per le rilevazioni consolidabili.
+        data_cutoff = df['Mese sottoscrizione'].dropna().max()
+        min_activation = df.loc[
+            df['Partner storico'].notna() & df['Mese attivazione'].notna(), 'Mese attivazione'
+        ].min()
+        observation_frames, detail_frames = [], []
+        if pd.notna(min_activation) and pd.notna(data_cutoff):
+            first_observation = month(min_activation + pd.DateOffset(months=13))
+            for obs_month in pd.date_range(first_observation, data_cutoff, freq='MS'):
+                cohort_month = month(obs_month - pd.DateOffset(months=13))
+                window_start = month(cohort_month + pd.DateOffset(months=1))
+                window_end = month(cohort_month + pd.DateOffset(months=12))
+                activated_m = df[
+                    df['Partner storico'].notna()
+                    & (df['Mese attivazione'] == cohort_month)
+                    & (df['Stato'] != 'ANNULLATO')
+                    & df['ID fornitura'].ne('')
+                ].copy()
+                if activated_m.empty:
+                    continue
+                activated_m['Partner coorte'] = activated_m['Partner storico']
+                activated_m['Mese rilevazione'] = obs_month
+                activated_m['Mese coorte osservata'] = cohort_month
+                activated_m['È Switch OUT'] = activated_m['Mese chiusura'].between(window_start, window_end, inclusive='both')
+                obs = activated_m.groupby('Partner coorte', as_index=False).agg(
+                    **{'POD/PDR attivati': ('ID contratto', 'nunique'), 'Switch OUT': ('È Switch OUT', 'sum')}
+                ).rename(columns={'Partner coorte': 'Partner'})
+                obs['Mese rilevazione'] = obs_month
+                obs['Mese coorte'] = cohort_month
+                obs['Cohort Churn'] = obs['Switch OUT'] / obs['POD/PDR attivati'].where(obs['POD/PDR attivati'] > 0)
+                observation_frames.append(obs[cohort_cols])
+                detail_frames.append(activated_m)
+
+        observations = pd.concat(observation_frames, ignore_index=True) if observation_frames else pd.DataFrame(columns=cohort_cols)
+        activated_detail = pd.concat(detail_frames, ignore_index=True) if detail_frames else pd.DataFrame()
+        if not observations.empty:
+            current_keys = set(zip(observations['Partner'], observations['Mese rilevazione']))
+            keep_old = ~cohort_ledger.apply(
+                lambda r: (r['Partner'], r['Mese rilevazione']) in current_keys, axis=1
+            ) if not cohort_ledger.empty else pd.Series(dtype=bool)
+            old_kept = cohort_ledger[keep_old].copy() if not cohort_ledger.empty else cohort_ledger.copy()
+            cohort_updated = pd.concat([old_kept, observations], ignore_index=True)
+        else:
+            cohort_updated = cohort_ledger.copy()
         cohort_updated = cohort_updated.sort_values(['Partner', 'Mese rilevazione']).reset_index(drop=True)
 
-        # Stato programma: servono 6 rilevazioni consolidate consecutive; nessuna baseline manuale.
-        # I NaT (decorrenza "no") vanno prima, così l'ultima riga è la configurazione datata più recente.
-        config_status = configs.sort_values('Decorrenza', na_position='first').groupby('Agente', as_index=False).tail(1)
-        all_partners = (
-            set(df['Partner storico'].dropna()) | set(df['Partner'].dropna())
-            | set(config_status['Agente'].dropna())
-        )
-        status_rows = []
-        for partner in sorted(all_partners):
-            hist = cohort_updated[cohort_updated['Partner'] == partner].sort_values('Mese rilevazione')
-            n_obs = len(hist)
-            n_consec = consecutive_run(hist['Mese rilevazione'])
-            last6 = hist.tail(6)
-            act6 = last6['POD/PDR attivati'].sum()
-            baseline_mobile = (
-                churn_tenths(last6['Switch OUT'].sum(), act6) / 10
-                if n_consec >= 6 and act6 > 0 else pd.NA
-            )
-            cfg = config_status[config_status['Agente'] == partner]
-            configured = bool(cfg['Bonus churn attivo'].iloc[0]) if not cfg.empty else False
-            start = cfg['Decorrenza bonus churn'].iloc[0] if not cfg.empty else pd.NaT
-            eligible = n_consec >= 6
-            active = configured and eligible and pd.notna(start) and start <= competence
-            if active:
-                state = 'ATTIVO'
-            elif eligible and not configured:
-                state = 'IDONEO - NON CONFIGURATO'
-            elif configured and not eligible:
-                state = 'IN MATURAZIONE - CONFIGURAZIONE ANTICIPATA'
-            elif configured and eligible and (pd.isna(start) or start > competence):
-                state = 'IDONEO - IN ATTESA DECORRENZA'
-            else:
-                state = 'IN MATURAZIONE' if n_consec < 6 else 'IDONEO'
-            status_rows.append({
-                'Partner': partner,
-                'Rilevazioni consolidate': n_obs,
-                'Rilevazioni consecutive': n_consec,
-                'Rilevazioni mancanti': max(0, 6 - n_consec),
-                'Baseline mobile ultime 6 (%)': baseline_mobile,
-                'Bonus Churn configurato': 'SI' if configured else 'NO',
-                'Decorrenza Bonus Churn': start,
-                'Stato programma': state,
-            })
-        program_status = pd.DataFrame(status_rows)
-
-        # Classe di partenza (baseline congelata), bonus trimestrali e bonus annuale.
-        # Anni di accordo di 12 mesi dalla decorrenza (l'anno 2 parte dal 13° mese). Baseline anno 1 =
-        # prime 6 rilevazioni; anno 2+ = churn annuale dell'anno precedente. Il tasso trimestrale è la
-        # fotografia delle 6 rilevazioni più recenti a fine trimestre. Senza rilevazioni piene non si
-        # calcola né si stima nulla: si segnala di attendere.
-        baseline_rows, quarter_rows, annual_rows, waiting = [], [], [], []
+        config_status = configs.sort_values('Decorrenza').groupby('Agente', as_index=False).tail(1)
+        partner_results = {}
         for _, cfg in config_status.iterrows():
+            if not bool(cfg['Bonus churn attivo']):
+                continue
             partner = cfg['Agente']
             start = cfg['Decorrenza bonus churn']
-            if not cfg['Bonus churn attivo'] or pd.isna(start) or start > competence:
-                continue
-            hist = cohort_updated[cohort_updated['Partner'] == partner]
-            baseline, quarters, annual, info = evaluate_partner_bonus(partner, hist, start, competence)
-            if baseline is None:
-                baseline_rows.append({
-                    'Partner': partner, 'Anno di accordo': info['Anno di accordo'],
-                    'Periodo anno': info['Periodo anno'],
-                    'Rilevazioni/fotografie presenti': f"{info['Presenti']}/{info['Attese']}",
-                    'Classe di partenza': 'ATTENDERE: baseline non calcolabile, nessuna stima effettuata',
-                })
-                waiting.append(info['Messaggio'])
-                continue
-            baseline_rows.append(baseline)
-            quarter_rows.extend(quarters)
-            if annual:
-                annual_rows.append(annual)
-        baseline_df = pd.DataFrame(baseline_rows)
-        quarters_df = pd.DataFrame(quarter_rows)
-        annual_df = pd.DataFrame(annual_rows)
+            hist = cohort_updated[cohort_updated['Partner'] == partner].copy()
+            baseline, quarters, annual, info = evaluate_partner_bonus(partner, hist, start, data_cutoff)
+            partner_results[partner] = {
+                'start': start, 'hist': hist, 'baseline': baseline,
+                'quarters': quarters, 'annual': annual, 'info': info,
+            }
 
-        st.subheader('Rilevazione corrente')
-        st.dataframe(observations, use_container_width=True)
         st.subheader('Stato partner')
-        st.dataframe(program_status, use_container_width=True)
-        for w_message in waiting:
-            st.warning(w_message)
-        if not baseline_df.empty:
-            st.subheader('Classe di partenza')
-            st.dataframe(baseline_df, use_container_width=True)
-        if not quarters_df.empty:
-            st.subheader('Bonus trimestrali: etichetta ed esito')
-            st.dataframe(quarters_df, use_container_width=True)
-        if not annual_df.empty:
-            st.subheader('Bonus annuale: etichetta ed esito')
-            st.dataframe(annual_df, use_container_width=True)
-        st.caption(
-            'Tassi con un decimale troncato (non arrotondato). Gli importi dei bonus non sono calcolati: '
-            'dipendono dall\'agente e si assegnano a parte in base a classe ed esito.'
-        )
+        if not partner_results:
+            st.info('Nessun agente risulta iscritto al programma Bonus Churn.')
+        else:
+            for partner, result in partner_results.items():
+                info = result['info']
+                c_name, c_progress, c_details = st.columns([2.0, 4.0, 1.2])
+                c_name.write(f'**{partner}**')
+                progress = float(info.get('Progressione', 0.0))
+                months_done = int(info.get('Mesi consolidati', 0))
+                c_progress.progress(progress, text=f'{months_done}/12 mesi consolidati - {progress:.0%}')
+                if c_details.button('Dettagli', key=f'details_bonus_{norm(partner)}'):
+                    st.session_state['bonus_partner_selected'] = partner
 
+            selected_partner = st.session_state.get('bonus_partner_selected')
+            if selected_partner in partner_results:
+                result = partner_results[selected_partner]
+                info = result['info']
+                baseline = result['baseline']
+                quarters = result['quarters']
+                annual = result['annual']
+                st.divider()
+                st.subheader(f'Dettagli - {selected_partner}')
+                st.write(f"**Decorrenza:** {format_month_year(result['start'])}")
+                if baseline is None:
+                    st.warning(info.get('Messaggio', 'Storico insufficiente.'))
+                else:
+                    st.write(
+                        f"**Classe di partenza:** {baseline['Classe di partenza']} "
+                        f"({baseline['Cohort Churn di partenza (%)']:.1f}% churn)"
+                    )
+                    st.write(
+                        '**Micro-classe BEGINNER:** '
+                        + (baseline['Micro-classe BEGINNER'] or 'No')
+                    )
+
+                    for quarter in quarters:
+                        st.markdown(f"### Report {quarter['Trimestre']}")
+                        st.write('**Stato:** Completato')
+                        st.write(f"**Periodo:** {quarter['Periodo']}")
+                        st.write(f"**Churn iniziale:** {quarter['Churn iniziale (%)']:.1f}%")
+                        if baseline['Classe di partenza'] == 'BEGINNER':
+                            st.write(f"**Target trimestre:** -{quarter['Target trimestre (p.p.)']:.1f} p.p.")
+                        st.write(f"**Churn rilevato:** {quarter['Churn rilevato (%)']:.1f}%")
+                        st.write(f"**Idoneità:** {quarter['Idoneità'].title()}")
+                        q_df = pd.DataFrame([quarter])
+                        q_export = to_excel({'Sintesi trimestre': q_df})
+                        st.download_button(
+                            f"Scarica report {quarter['Trimestre']}", q_export,
+                            file_name=f"bonus_churn_{norm(selected_partner)}_{quarter['Trimestre'].lower()}.xlsx",
+                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                            key=f"download_bonus_{norm(selected_partner)}_{quarter['Trimestre']}"
+                        )
+
+                    if annual is not None:
+                        st.markdown('### Report Annuale')
+                        st.write('**Stato:** Completato')
+                        st.write(f"**Periodo:** {annual['Periodo']}")
+                        st.write(f"**Churn iniziale:** {annual['Churn iniziale (%)']:.1f}%")
+                        st.write(f"**Churn rilevato:** {annual['Churn rilevato (%)']:.1f}%")
+                        st.write(f"**Idoneità:** {annual['Idoneità'].title()}")
+                        st.write(f"**Nuova classe:** {annual['Nuova classe']}")
+                        annual_export = to_excel({'Sintesi annuale': pd.DataFrame([annual])})
+                        st.download_button(
+                            'Scarica report Annuale', annual_export,
+                            file_name=f"bonus_churn_{norm(selected_partner)}_annuale.xlsx",
+                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                            key=f"download_bonus_{norm(selected_partner)}_annuale"
+                        )
+
+        st.caption('I report trimestrali e annuali compaiono soltanto quando tutte le rilevazioni necessarie sono disponibili.')
         cohort_export = to_excel({'Registro storico Cohort Churn': cohort_updated})
-        detail_sheets = {
-            'Rilevazione corrente': observations,
-            'Stato partner': program_status,
-        }
-        if not baseline_df.empty:
-            detail_sheets['Classe di partenza'] = baseline_df
-        if not quarters_df.empty:
-            detail_sheets['Bonus trimestrali'] = quarters_df
-        if not annual_df.empty:
-            detail_sheets['Bonus annuali'] = annual_df
-        detail_sheets['Dettaglio coorte'] = activated
-        detail_sheets['Registro storico'] = cohort_updated
-        detail_export = to_excel(detail_sheets)
-        d1, d2 = st.columns(2)
-        with d1:
-            st.download_button(
-                'Scarica registro Cohort Churn aggiornato', cohort_export,
-                file_name=f'registro_cohort_churn_{competence:%Y_%m}.xlsx',
-                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
-        with d2:
-            st.download_button(
-                'Scarica analisi Cohort Churn completa', detail_export,
-                file_name=f'analisi_cohort_churn_{competence:%Y_%m}.xlsx',
-                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
+        detail_sheets = {'Registro storico': cohort_updated}
+        if not observations.empty:
+            detail_sheets['Rilevazioni aggiornate'] = observations
+        if not activated_detail.empty:
+            detail_sheets['Dettaglio coorti'] = activated_detail
+        st.download_button(
+            'Scarica registro Cohort Churn aggiornato', cohort_export,
+            file_name='registro_cohort_churn_aggiornato.xlsx',
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
         st.stop()
 
     # Gettone Avanzato: stati validi = tutti tranne ANNULLATO e SOSPESO (CHIUSO incluso).
@@ -1117,8 +1099,47 @@ if contracts_file and mapping_file:
     c3.metric('Nuovi malus', f"€ {malus_new['Importo'].sum():,.2f}")
     c4.metric('Totale', f"€ {movements['Importo'].sum():,.2f}")
 
-    st.subheader('Sintesi partner')
+    st.subheader('Sintesi partner e report individuali')
     st.dataframe(summary, use_container_width=True)
+    advanced_partners = sorted(set(initial['Partner'].dropna()) | set(recurring['Partner'].dropna()) | set(malus_new['Partner'].dropna()))
+    for partner in advanced_partners:
+        p_initial = initial[initial['Partner'] == partner].copy()
+        p_recurring = recurring[recurring['Partner'] == partner].copy()
+        p_malus = malus_new[malus_new['Partner'] == partner].copy()
+        p_100 = p_malus[p_malus['Fascia malus'] == '100%'].copy()
+        p_50 = p_malus[p_malus['Fascia malus'] == '50%'].copy()
+        base_amount = float(p_initial['Importo'].sum())
+        recurring_amount = float(p_recurring['Importo'].sum())
+        malus_amount = float(p_malus['Importo'].sum())
+        net_amount = base_amount + recurring_amount + malus_amount
+        p_summary = pd.DataFrame([
+            {'Voce': 'Contratti con gettone base', 'Numero': len(p_initial), 'Importo': base_amount},
+            {'Voce': 'Ricorrenti', 'Numero': len(p_recurring), 'Importo': recurring_amount},
+            {'Voce': 'Malus 100%', 'Numero': len(p_100), 'Importo': float(p_100['Importo'].sum())},
+            {'Voce': 'Malus 50%', 'Numero': len(p_50), 'Importo': float(p_50['Importo'].sum())},
+            {'Voce': 'Decurtazioni per chiusure', 'Numero': len(p_malus), 'Importo': malus_amount},
+            {'Voce': 'TOTALE NETTO', 'Numero': pd.NA, 'Importo': net_amount},
+        ])
+        partner_export = to_excel({
+            'Sintesi': p_summary,
+            'Contratti del mese': p_initial,
+            'Ricorrenti': p_recurring,
+            'Malus 100%': p_100,
+            'Malus 50%': p_50,
+        })
+        safe_partner = re.sub(r'[^A-Za-z0-9._-]+', '_', str(partner)).strip('_') or 'partner'
+        row = st.columns([2.0, 1.15, 1.15, 1.15, 1.15, 1.2])
+        row[0].write(f'**{partner}**')
+        row[1].write(f'Base: € {base_amount:,.2f}')
+        row[2].write(f'Ricorrenti: € {recurring_amount:,.2f}')
+        row[3].write(f'Malus: € {malus_amount:,.2f}')
+        row[4].write(f'Netto: € {net_amount:,.2f}')
+        row[5].download_button(
+            'Scarica report', partner_export,
+            file_name=f'report_avanzato_{safe_partner}_{competence:%Y_%m}.xlsx',
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            key=f'avanzato_{safe_partner}_{competence:%Y_%m}'
+        )
     st.subheader('Controlli')
     st.write(
         f'Non mappati/conflitti: **{len(unmapped)}** | '
