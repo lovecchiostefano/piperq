@@ -4,7 +4,7 @@ import zipfile
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title='Commission Hub', page_icon='📊', layout='wide', initial_sidebar_state='expanded')
+st.set_page_config(page_title='PxQ | Commissioni comparatori', page_icon='📊', layout='wide', initial_sidebar_state='expanded')
 st.markdown('''
 <style>
 :root{--brand:#3345d9;--brand2:#7968ee;--ink:#172033;--muted:#667085;--line:#e5e8f0;--canvas:#f6f7fb}
@@ -25,7 +25,7 @@ div[data-testid="stExpander"]{background:#fff;border:1px solid var(--line);borde
 h1,h2,h3{color:var(--ink);letter-spacing:-.025em}hr{border-color:var(--line)}
 @media(max-width:900px){.block-container{padding-left:1rem;padding-right:1rem}.hero h1{font-size:1.55rem}}
 </style>
-<div class="hero"><h1>Commission Hub</h1><p>Calcolo, controllo e reportistica delle commissioni partner</p></div>
+<div class="hero"><h1>PxQ | Commissioni comparatori</h1><p>Calcolo, controllo e reportistica delle commissioni partner</p></div>
 ''',unsafe_allow_html=True)
 
 DEFAULT_COMPETENCE = pd.Timestamp('2026-09-01')
