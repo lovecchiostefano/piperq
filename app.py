@@ -4,9 +4,29 @@ import zipfile
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title='Commissioni partner', layout='wide')
-st.title('Calcolo commissioni partner')
-st.caption('Commissioni Avanzato e monitoraggio Bonus Churn basati su attivazione e Closing Date.')
+st.set_page_config(page_title='Commission Hub', page_icon='📊', layout='wide', initial_sidebar_state='expanded')
+st.markdown('''
+<style>
+:root{--brand:#3345d9;--brand2:#7968ee;--ink:#172033;--muted:#667085;--line:#e5e8f0;--canvas:#f6f7fb}
+.stApp{background:var(--canvas);color:var(--ink)}
+.block-container{max-width:1440px;padding-top:1.5rem;padding-bottom:3rem}
+[data-testid="stSidebar"]{background:#fff;border-right:1px solid var(--line)}
+.hero{padding:1.45rem 1.7rem;border-radius:20px;color:#fff;margin-bottom:1.25rem;background:linear-gradient(120deg,#2638d7 0%,#5f55e9 58%,#8b75f4 100%);box-shadow:0 12px 32px rgba(37,54,216,.18)}
+.hero h1{margin:0;font-size:2rem;letter-spacing:-.04em;color:#fff}.hero p{margin:.4rem 0 0;opacity:.9}
+.section-kicker{color:var(--brand);font-size:.78rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase;margin:.2rem 0 .7rem}
+[data-testid="stMetric"]{background:#fff;border:1px solid var(--line);border-radius:16px;padding:1rem 1.1rem;box-shadow:0 4px 18px rgba(23,32,51,.05);min-height:104px}
+[data-testid="stMetricLabel"]{color:var(--muted);font-weight:650}[data-testid="stMetricValue"]{color:var(--ink);font-weight:780;letter-spacing:-.03em}
+div[data-testid="stVerticalBlockBorderWrapper"]{background:#fff;border:1px solid var(--line);border-radius:17px;box-shadow:0 5px 18px rgba(23,32,51,.045)}
+.stButton>button,.stDownloadButton>button{border-radius:10px;min-height:2.55rem;font-weight:680;border:1px solid #d6dbe7}.stDownloadButton>button{width:100%;background:#fff}
+.stButton>button:hover,.stDownloadButton>button:hover{border-color:var(--brand);color:var(--brand)}
+[data-testid="stProgress"]>div>div>div{background:linear-gradient(90deg,var(--brand),var(--brand2))}
+[data-testid="stDataFrame"]{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+div[data-testid="stExpander"]{background:#fff;border:1px solid var(--line);border-radius:14px}
+h1,h2,h3{color:var(--ink);letter-spacing:-.025em}hr{border-color:var(--line)}
+@media(max-width:900px){.block-container{padding-left:1rem;padding-right:1rem}.hero h1{font-size:1.55rem}}
+</style>
+<div class="hero"><h1>Commission Hub</h1><p>Calcolo, controllo e reportistica delle commissioni partner</p></div>
+''',unsafe_allow_html=True)
 
 DEFAULT_COMPETENCE = pd.Timestamp('2026-09-01')
 
@@ -453,7 +473,7 @@ MONTH_OPTIONS = pd.period_range('2025-01', '2032-12', freq='M').astype(str).toli
 YEAR_OPTIONS = list(range(2025, 2033))
 with st.sidebar:
     module = st.radio(
-        'Funzione',
+        'Area di lavoro',
         ['Commissioni Base', 'Commissioni Avanzato', 'Bonus Churn - rilevazioni e idoneità']
     )
     if module == 'Bonus Churn - rilevazioni e idoneità':
@@ -466,11 +486,11 @@ with st.sidebar:
             index=MONTH_OPTIONS.index(DEFAULT_COMPETENCE.strftime('%Y-%m')),
         )
         competence = pd.Timestamp(f'{competence_label}-01')
-    st.info('Decorrenze, importi e adesione al Bonus Churn sono letti dal file identificatori.')
+    st.caption('Regole economiche e decorrenze sono lette dal file identificatori.')
 
-contracts_file = st.file_uploader('1. Carica report contratti', type='xlsx')
-mapping_file = st.file_uploader('2. Carica file identificatori e condizioni', type='xlsx')
-cohort_ledger_file = st.file_uploader('3. Registro storico Cohort Churn (opzionale)', type='xlsx', help='Usato solo dal modulo Bonus Churn. Al primo calcolo può essere lasciato vuoto.')
+st.markdown(f'<div class="section-kicker">{module}</div>',unsafe_allow_html=True)
+contracts_file = st.file_uploader('Report Salesforce',type='xlsx',help='Report generale dei contratti')
+mapping_file = st.file_uploader('Identificatori e condizioni',type='xlsx',help='Workbook con i fogli Base e Avanzato')
 
 if contracts_file and mapping_file:
     contracts = read_excel(contracts_file)
@@ -649,6 +669,8 @@ if contracts_file and mapping_file:
             ['Partner', 'GETTONE_BASE', 'PREMIO_UTENTI_ATTIVI', 'STORNO_UTENTI_CESSATI', 'TOTALE_NETTO']
         ].sort_values('Partner')
 
+        st.markdown('### Riepilogo economico')
+        st.caption(f'Competenza {competence:%m/%Y}')
         c1, c2, c3, c4 = st.columns(4)
         c1.metric('Gettone base', f"€ {base_gettoni['Importo'].sum():,.2f}")
         c2.metric('Premialità', f"€ {base_premi['Importo'].sum():,.2f}")
@@ -682,18 +704,18 @@ if contracts_file and mapping_file:
                 'Storno utenti cessati': p_storni,
             })
             safe_partner = re.sub(r'[^A-Za-z0-9._-]+', '_', str(partner)).strip('_') or 'partner'
-            row = st.columns([2.2, 1.2, 1.2, 1.2, 1.2, 1.2])
-            row[0].write(f'**{partner}**')
-            row[1].write(f'Base: € {amount_base:,.2f}')
-            row[2].write(f'Premio: € {amount_premio:,.2f}')
-            row[3].write(f'Storno: € {amount_storno:,.2f}')
-            row[4].write(f'Netto: € {amount_netto:,.2f}')
-            row[5].download_button(
-                'Scarica report', partner_export,
-                file_name=f'report_base_{safe_partner}_{competence:%Y_%m}.xlsx',
-                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                key=f'base_{safe_partner}_{competence:%Y_%m}'
-            )
+            with st.container(border=True):
+                title_col, net_col, action_col = st.columns([2.5,1.3,1.1])
+                title_col.markdown(f'### {partner}')
+                title_col.caption(f'{len(p_gettoni):,} contratti commissionabili')
+                net_col.metric('Totale netto',f'€ {amount_netto:,.2f}')
+                action_col.download_button('Scarica report',partner_export,file_name=f'report_base_{safe_partner}_{competence:%Y_%m}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'base_{safe_partner}_{competence:%Y_%m}')
+                k1,k2,k3=st.columns(3)
+                k1.metric('Gettone base',f'€ {amount_base:,.2f}')
+                k2.metric('Premialità',f'€ {amount_premio:,.2f}')
+                k3.metric('Storni',f'€ {amount_storno:,.2f}')
+                with st.expander('Visualizza dettagli'):
+                    st.dataframe(p_summary,use_container_width=True,hide_index=True)
 
         # Controlli limitati ai contratti della competenza (non all'intero report).
         base_rilevante = base_df['Mese sottoscrizione'] == competence
@@ -708,7 +730,7 @@ if contracts_file and mapping_file:
             & base_rilevante
             & base_df['Gettone base'].isna()
         ].copy()
-        st.subheader('Controlli')
+        st.subheader('Qualità dei dati')
         st.write(
             f'Non mappati/conflitti: **{len(base_unmapped)}** | '
             f'Esclusi SELF/GD: **{len(base_excl_sg)}** | '
@@ -821,25 +843,8 @@ if contracts_file and mapping_file:
         )
 
         cohort_cols = ['Partner', 'Mese rilevazione', 'Mese coorte', 'POD/PDR attivati', 'Switch OUT', 'Cohort Churn']
-        if cohort_ledger_file:
-            cohort_ledger = read_excel(cohort_ledger_file)
-            missing_cohort_cols = set(cohort_cols) - set(cohort_ledger.columns)
-            if missing_cohort_cols:
-                st.error('Il registro Cohort Churn non contiene le colonne richieste: ' + ', '.join(sorted(missing_cohort_cols)))
-                st.stop()
-            cohort_ledger = cohort_ledger[cohort_cols].copy()
-            cohort_ledger['Mese rilevazione'] = parse_dates(cohort_ledger['Mese rilevazione']).map(month)
-            cohort_ledger['Mese coorte'] = parse_dates(cohort_ledger['Mese coorte']).map(month)
-            for c in ['POD/PDR attivati', 'Switch OUT', 'Cohort Churn']:
-                cohort_ledger[c] = pd.to_numeric(cohort_ledger[c], errors='coerce')
-        else:
-            cohort_ledger = pd.DataFrame(columns=cohort_cols)
-
-        duplicate_existing = cohort_ledger.duplicated(['Partner', 'Mese rilevazione'], keep=False)
-        if duplicate_existing.any():
-            st.error('Il registro Cohort Churn contiene rilevazioni duplicate per lo stesso partner e mese.')
-            st.dataframe(cohort_ledger[duplicate_existing], use_container_width=True)
-            st.stop()
+        # Rilevazioni ricostruite interamente dal report Salesforce caricato.
+        # Nessun registro storico separato è richiesto.
 
         # Il mese massimo del report è il limite per le rilevazioni consolidabili.
         data_cutoff = df['Mese sottoscrizione'].dropna().max()
@@ -876,16 +881,11 @@ if contracts_file and mapping_file:
 
         observations = pd.concat(observation_frames, ignore_index=True) if observation_frames else pd.DataFrame(columns=cohort_cols)
         activated_detail = pd.concat(detail_frames, ignore_index=True) if detail_frames else pd.DataFrame()
-        if not observations.empty:
-            current_keys = set(zip(observations['Partner'], observations['Mese rilevazione']))
-            keep_old = ~cohort_ledger.apply(
-                lambda r: (r['Partner'], r['Mese rilevazione']) in current_keys, axis=1
-            ) if not cohort_ledger.empty else pd.Series(dtype=bool)
-            old_kept = cohort_ledger[keep_old].copy() if not cohort_ledger.empty else cohort_ledger.copy()
-            cohort_updated = pd.concat([old_kept, observations], ignore_index=True)
-        else:
-            cohort_updated = cohort_ledger.copy()
-        cohort_updated = cohort_updated.sort_values(['Partner', 'Mese rilevazione']).reset_index(drop=True)
+        cohort_updated = observations.copy()
+        if not cohort_updated.empty:
+            cohort_updated = cohort_updated.sort_values(
+                ['Partner', 'Mese rilevazione']
+            ).reset_index(drop=True)
 
         config_status = configs.sort_values('Decorrenza').groupby('Agente', as_index=False).tail(1)
         partner_results = {}
@@ -905,15 +905,21 @@ if contracts_file and mapping_file:
         if not partner_results:
             st.info('Nessun agente risulta iscritto al programma Bonus Churn.')
         else:
-            for partner, result in partner_results.items():
-                info = result['info']
-                c_name, c_progress, c_details = st.columns([2.0, 4.0, 1.2])
-                c_name.write(f'**{partner}**')
-                progress = float(info.get('Progressione', 0.0))
-                months_done = int(info.get('Mesi consolidati', 0))
-                c_progress.progress(progress, text=f'{months_done}/12 mesi consolidati - {progress:.0%}')
-                if c_details.button('Dettagli', key=f'details_bonus_{norm(partner)}'):
-                    st.session_state['bonus_partner_selected'] = partner
+            for partner,result in partner_results.items():
+                info=result['info']; baseline=result['baseline']
+                progress=float(info.get('Progressione',0.0)); months_done=int(info.get('Mesi consolidati',0))
+                with st.container(border=True):
+                    name_col,status_col,action_col=st.columns([2.4,1.6,1.0])
+                    name_col.markdown(f'### {partner}')
+                    if baseline:
+                        name_col.caption(f"{baseline['Classe di partenza']} · {baseline['Cohort Churn di partenza (%)']:.1f}% churn")
+                    else:
+                        name_col.caption('Baseline non ancora disponibile')
+                    status_col.metric('Percorso annuale',f'{months_done}/12 mesi')
+                    if action_col.button('Dettagli',key=f'details_bonus_{norm(partner)}',use_container_width=True):
+                        st.session_state['bonus_partner_selected']=partner
+                    st.progress(progress,text=f'{progress:.0%} completato')
+                    st.caption(f"Decorrenza {format_month_year(result['start'])} · fine ciclo {info.get('Fine ciclo','')}")
 
             selected_partner = st.session_state.get('bonus_partner_selected')
             if selected_partner in partner_results:
@@ -938,8 +944,9 @@ if contracts_file and mapping_file:
                     )
 
                     for quarter in quarters:
-                        st.markdown(f"### Report {quarter['Trimestre']}")
-                        st.write('**Stato:** Completato')
+                        with st.container(border=True):
+                            st.markdown(f"### Report {quarter['Trimestre']} · {quarter['Periodo']}")
+                            st.write('**Stato:** Completato')
                         st.write(f"**Periodo:** {quarter['Periodo']}")
                         st.write(f"**Churn iniziale:** {quarter['Churn iniziale (%)']:.1f}%")
                         if baseline['Classe di partenza'] == 'BEGINNER':
@@ -956,7 +963,7 @@ if contracts_file and mapping_file:
                         )
 
                     if annual is not None:
-                        st.markdown('### Report Annuale')
+                        st.markdown('## Risultato annuale')
                         st.write('**Stato:** Completato')
                         st.write(f"**Periodo:** {annual['Periodo']}")
                         st.write(f"**Churn iniziale:** {annual['Churn iniziale (%)']:.1f}%")
@@ -972,17 +979,7 @@ if contracts_file and mapping_file:
                         )
 
         st.caption('I report trimestrali e annuali compaiono soltanto quando tutte le rilevazioni necessarie sono disponibili.')
-        cohort_export = to_excel({'Registro storico Cohort Churn': cohort_updated})
-        detail_sheets = {'Registro storico': cohort_updated}
-        if not observations.empty:
-            detail_sheets['Rilevazioni aggiornate'] = observations
-        if not activated_detail.empty:
-            detail_sheets['Dettaglio coorti'] = activated_detail
-        st.download_button(
-            'Scarica registro Cohort Churn aggiornato', cohort_export,
-            file_name='registro_cohort_churn_aggiornato.xlsx',
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
+        # Nessun upload o download di registro: lo storico è ricostruito dal report.
         st.stop()
 
     # Gettone Avanzato: stati validi = tutti tranne ANNULLATO e SOSPESO (CHIUSO incluso).
@@ -1093,6 +1090,8 @@ if contracts_file and mapping_file:
     anomalies = df[anomaly_scope & anomaly_flags.any(axis=1)].copy()
     anomalies['Motivi anomalia'] = join_reasons(anomaly_flags.loc[anomalies.index])
 
+    st.markdown('### Riepilogo economico')
+    st.caption(f'Competenza {competence:%m/%Y}')
     c1, c2, c3, c4 = st.columns(4)
     c1.metric('Gettoni iniziali', f"€ {initial['Importo'].sum():,.2f}")
     c2.metric('Ricorrenti', f"€ {recurring['Importo'].sum():,.2f}")
@@ -1128,19 +1127,19 @@ if contracts_file and mapping_file:
             'Malus 50%': p_50,
         })
         safe_partner = re.sub(r'[^A-Za-z0-9._-]+', '_', str(partner)).strip('_') or 'partner'
-        row = st.columns([2.0, 1.15, 1.15, 1.15, 1.15, 1.2])
-        row[0].write(f'**{partner}**')
-        row[1].write(f'Base: € {base_amount:,.2f}')
-        row[2].write(f'Ricorrenti: € {recurring_amount:,.2f}')
-        row[3].write(f'Malus: € {malus_amount:,.2f}')
-        row[4].write(f'Netto: € {net_amount:,.2f}')
-        row[5].download_button(
-            'Scarica report', partner_export,
-            file_name=f'report_avanzato_{safe_partner}_{competence:%Y_%m}.xlsx',
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            key=f'avanzato_{safe_partner}_{competence:%Y_%m}'
-        )
-    st.subheader('Controlli')
+        with st.container(border=True):
+            title_col,net_col,action_col=st.columns([2.5,1.3,1.1])
+            title_col.markdown(f'### {partner}')
+            title_col.caption(f'{len(p_initial):,} contratti con gettone')
+            net_col.metric('Totale netto',f'€ {net_amount:,.2f}')
+            action_col.download_button('Scarica report',partner_export,file_name=f'report_avanzato_{safe_partner}_{competence:%Y_%m}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'avanzato_{safe_partner}_{competence:%Y_%m}')
+            k1,k2,k3=st.columns(3)
+            k1.metric('Gettone base',f'€ {base_amount:,.2f}')
+            k2.metric('Ricorrenti',f'€ {recurring_amount:,.2f}')
+            k3.metric('Malus',f'€ {malus_amount:,.2f}')
+            with st.expander('Visualizza dettagli'):
+                st.dataframe(p_summary,use_container_width=True,hide_index=True)
+    st.subheader('Qualità dei dati')
     st.write(
         f'Non mappati/conflitti: **{len(unmapped)}** | '
         f'Esclusi SELF/GD: **{len(excluded_sg)}** | '
