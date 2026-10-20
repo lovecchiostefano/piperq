@@ -896,7 +896,7 @@ if contracts_file and mapping_file:
                             positive = n * float(c['PREMIO UTENTI ATTIVI'])
                         if pd.notna(c.get('STORNO UTENTI CESSATI')) and pd.notna(c.get('MESI CALCOLO STORNO DA ATTIVAZIONE')):
                             cohort = current_month - pd.DateOffset(
-                                months=int(c['MESI CALCOLO STORNO DA ATTIVAZIONE']) + 2
+                                months=int(c['MESI CALCOLO STORNO DA ATTIVAZIONE']) + 1
                             )
                             n = len(data[
                                 (data['Agente'] == agent)
@@ -1318,7 +1318,8 @@ if contracts_file and mapping_file:
         base_premi['Tipo movimento'] = 'PREMIO_UTENTI_ATTIVI'
         base_premi['Importo'] = base_premi['Premio utenti attivi']
 
-        # Storno: coorte sottoscritta X + 2 mesi prima e oggi CHIUSA.
+        # Storno: coorte sottoscritta X + 2 mesi tecnici, con conteggio inclusivo
+        # della competenza. Offset effettivo = X + 2 - 1 = X + 1.
         base_storni = base_df[
             base_df['Partner'].notna()
             & base_df['Storno utenti cessati'].notna()
@@ -1327,7 +1328,7 @@ if contracts_file and mapping_file:
         ].copy()
         base_storni['Mesi tecnici pre-attivazione'] = 2
         base_storni['Mese obiettivo storno'] = base_storni['Mesi storno'].apply(
-            lambda x: competence - pd.DateOffset(months=int(x) + 2)
+            lambda x: competence - pd.DateOffset(months=int(x) + 1)
         )
         base_storni = base_storni[
             base_storni['Mese sottoscrizione'] == base_storni['Mese obiettivo storno']
