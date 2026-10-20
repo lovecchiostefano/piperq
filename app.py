@@ -24,11 +24,75 @@ div[data-testid="stVerticalBlockBorderWrapper"]{background:#fff;border:1px solid
 div[data-testid="stExpander"]{background:#fff;border:1px solid var(--line);border-radius:14px}
 h1,h2,h3{color:var(--ink);letter-spacing:-.025em}hr{border-color:var(--line)}
 @media(max-width:900px){.block-container{padding-left:1rem;padding-right:1rem}.hero h1{font-size:1.55rem}}
+
+.app-footer-spacer{height:5.5rem}
+.app-footer{margin-top:2.5rem;padding:1.15rem 1.35rem;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:center;gap:.6rem;color:var(--muted);font-size:.88rem;background:rgba(255,255,255,.72);border-radius:14px}
+.app-footer strong{color:var(--ink);font-weight:700}
+.app-footer img{height:34px;width:auto;display:block;object-fit:contain}
+
+.light-metric{background:#fff;border:1px solid var(--line);border-radius:14px;padding:.82rem 1rem;min-height:92px;box-shadow:0 3px 12px rgba(23,32,51,.035)}
+.light-metric-label{color:var(--muted);font-size:.86rem;font-weight:500;margin-bottom:.38rem}
+.light-metric-value{color:#344054;font-size:1.38rem;font-weight:400;letter-spacing:-.02em;line-height:1.15}
+
+/* Traduzione stabile del file uploader Streamlit.
+   Nasconde l'intero contenuto nativo prima di inserire una sola copia del testo. */
+[data-testid="stFileUploaderDropzoneInstructions"] > * {
+  display:none!important;
+}
+[data-testid="stFileUploaderDropzoneInstructions"]::before {
+  content:"Trascina un file oppure premi il tasto";
+  display:block;
+  font-size:.92rem;
+  line-height:1.3;
+  color:var(--ink);
+  font-weight:600;
+}
+[data-testid="stFileUploaderDropzoneInstructions"]::after {
+  content:"Limite 200 MB per file · XLSX";
+  display:block;
+  margin-top:.28rem;
+  font-size:.78rem;
+  line-height:1.2;
+  color:var(--muted);
+  font-weight:400;
+}
+[data-testid="stFileUploaderDropzone"] button {
+  /* Il testo inglese è un nodo diretto del bottone, non sempre racchiuso in un elemento. */
+  font-size:0!important;
+  color:transparent!important;
+  white-space:nowrap;
+}
+[data-testid="stFileUploaderDropzone"] button * {
+  display:none!important;
+}
+[data-testid="stFileUploaderDropzone"] button::after {
+  content:"Scegli file";
+  display:inline-block;
+  font-size:.875rem!important;
+  line-height:1.2;
+  color:var(--ink)!important;
+  visibility:visible!important;
+}
 </style>
 <div class="hero"><h1>PxQ | Commissioni comparatori</h1><p>Calcolo, controllo e reportistica delle commissioni partner</p></div>
 ''',unsafe_allow_html=True)
 
 DEFAULT_COMPETENCE = pd.Timestamp('2026-09-01')
+
+FOOTER_LOGO_DATA = "data:image/png;base64,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"
+
+
+def render_footer():
+    st.markdown(
+        f"""
+        <div class="app-footer-spacer"></div>
+        <div class="app-footer">
+            <span>Author: <strong>Stefano Lovecchio</strong> x</span>
+            <img src="{FOOTER_LOGO_DATA}" alt="NeN Gruppo a2a" />
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def norm(v):
@@ -288,6 +352,32 @@ def program_months(start, offset, count):
     return [start + pd.DateOffset(months=offset + i) for i in range(count)]
 
 
+def safe_float(value, default=0.0):
+    # pd.NA e NaN non possono essere valutati con `value or 0`.
+    if value is None or pd.isna(value):
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def safe_int(value, default=0):
+    return int(round(safe_float(value, default)))
+
+
+def render_light_metric(target, label, value):
+    target.markdown(
+        f"""
+        <div class="light-metric">
+            <div class="light-metric-label">{label}</div>
+            <div class="light-metric-value">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def format_month_year(value):
     return '' if pd.isna(value) else pd.Timestamp(value).strftime('%m/%Y')
 
@@ -449,10 +539,28 @@ def join_reasons(flags):
     )
 
 
+@st.cache_data(show_spinner=False, max_entries=24)
+def _read_excel_cached(file_bytes, sheet_name=0):
+    # La cache è basata sul contenuto del file, non sul puntatore dell'UploadedFile.
+    # Cambiare schermata non forza quindi una nuova lettura completa del workbook.
+    return pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, engine='openpyxl')
+
+
 def read_excel(upload, sheet_name=0):
-    return pd.read_excel(upload, sheet_name=sheet_name, engine='openpyxl')
+    if hasattr(upload, 'getvalue'):
+        file_bytes = upload.getvalue()
+    elif isinstance(upload, (bytes, bytearray)):
+        file_bytes = bytes(upload)
+    else:
+        # Compatibilità con file locali/file-like.
+        position = upload.tell() if hasattr(upload, 'tell') else None
+        file_bytes = upload.read()
+        if position is not None and hasattr(upload, 'seek'):
+            upload.seek(position)
+    return _read_excel_cached(file_bytes, sheet_name)
 
 
+@st.cache_data(show_spinner=False, max_entries=96)
 def to_excel(sheets):
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as writer:
@@ -474,10 +582,10 @@ YEAR_OPTIONS = list(range(2025, 2033))
 with st.sidebar:
     module = st.radio(
         'Area di lavoro',
-        ['Commissioni Base', 'Commissioni Avanzato', 'Bonus Churn - rilevazioni e idoneità']
+        ['Commissioni Base', 'Commissioni Avanzato', 'Bonus Churn - rilevazioni e idoneità', 'Overview & Forecast']
     )
-    if module == 'Bonus Churn - rilevazioni e idoneità':
-        # La vista Bonus Churn è unica e determina automaticamente lo stato di ogni partner.
+    if module in ['Bonus Churn - rilevazioni e idoneità', 'Overview & Forecast']:
+        # Queste viste determinano automaticamente il periodo dai dati caricati.
         competence = pd.Timestamp.today().to_period('M').to_timestamp()
     else:
         competence_label = st.selectbox(
@@ -493,12 +601,14 @@ contracts_file = st.file_uploader('Report Salesforce',type='xlsx',help='Report g
 mapping_file = st.file_uploader('Identificatori e condizioni',type='xlsx',help='Workbook con i fogli Base e Avanzato')
 
 if contracts_file and mapping_file:
+    # La prima elaborazione usa il file; i passaggi successivi tra schermate riusano la cache.
     contracts = read_excel(contracts_file)
     mapping_sheet = 'Base' if module == 'Commissioni Base' else 'Avanzato'
     try:
         mapping = read_excel(mapping_file, sheet_name=mapping_sheet)
     except ValueError:
         st.error(f'Il file identificatori non contiene il foglio richiesto: {mapping_sheet}.')
+        render_footer()
         st.stop()
 
     required = {
@@ -510,9 +620,445 @@ if contracts_file and mapping_file:
     missing = required - set(contracts.columns)
     if missing:
         st.error('Colonne mancanti nel report: ' + ', '.join(sorted(missing)))
+        render_footer()
         st.stop()
     if contracts.empty:
         st.error('Il report contratti è vuoto.')
+        render_footer()
+        st.stop()
+
+    if module == 'Overview & Forecast':
+        st.header('Overview & Forecast')
+        st.caption(
+            'I mesi presenti nel report restano sempre effettivi, incluso l’ultimo mese parziale. '
+            'Sono stimati soltanto i mesi successivi all’ultima Contract quote date disponibile.'
+        )
+        quote_dates = parse_dates(contracts['Contract quote date'])
+        available_years = sorted(quote_dates.dropna().dt.year.unique().astype(int).tolist())
+        if not available_years:
+            st.error('Nessun anno disponibile nel report.')
+            render_footer()
+            st.stop()
+        selected_year = st.selectbox('Anno', available_years, index=len(available_years) - 1)
+        download_slot = st.empty()
+        year_months = [pd.Timestamp(selected_year, m, 1) for m in range(1, 13)]
+        month_labels = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic']
+        report_cutoff = quote_dates.max().to_period('M').to_timestamp()
+        actual_months = {m for m in year_months if m <= report_cutoff}
+        forecast_months = {m for m in year_months if m > report_cutoff}
+
+        def get_cfg(sheet):
+            mapping_file.seek(0)
+            cfg = read_excel(mapping_file, sheet_name=sheet).copy()
+            cfg.columns = [str(col).replace('\ufeff', '').strip() for col in cfg.columns]
+            aliases = {norm(col): col for col in cfg.columns}
+            required_names = [
+                'Agente', 'IDENTIFICATORI SUBCHANNEL', 'IDENTIFICATORI PROMO CODE',
+                'ESCLUDI SELF', 'ESCLUDI GD'
+            ]
+            missing_names = [name for name in required_names if norm(name) not in aliases]
+            if missing_names:
+                st.error(
+                    f'Nel foglio {sheet} mancano colonne necessarie per Overview & Forecast: '
+                    + ', '.join(missing_names)
+                )
+                render_footer()
+                st.stop()
+            cfg = cfg.rename(columns={aliases[norm(name)]: name for name in required_names})
+            cfg['Sub IDs'] = cfg['IDENTIFICATORI SUBCHANNEL'].apply(split_ids)
+            cfg['Promo IDs'] = cfg['IDENTIFICATORI PROMO CODE'].apply(split_ids)
+            for col in cfg.columns:
+                if str(col).startswith(('GETTONE', 'RICORRENTE', 'PREMIO', 'MESI CALCOLO', 'STORNO')):
+                    cfg[col] = pd.to_numeric(cfg[col], errors='coerce')
+            return cfg
+
+        def map_agent(row, cfg):
+            if cfg.empty or 'Agente' not in cfg.columns:
+                return pd.NA
+            sub_hits = cfg[cfg['Sub IDs'].apply(
+                lambda ids: matches_subchannel(row.get('Subchannel'), ids)
+            )]
+            promo_hits = cfg[cfg['Promo IDs'].apply(
+                lambda ids: contains_promo(row.get('Promo code'), ids)
+            )]
+            hits = cfg.loc[sub_hits.index.union(promo_hits.index)].copy()
+            if hits.empty:
+                return pd.NA
+            hits = hits[hits.apply(
+                lambda row_cfg: exclusion_reason(
+                    row.get('Subchannel'), row_cfg.get('ESCLUDI SELF'), row_cfg.get('ESCLUDI GD')
+                ) is None,
+                axis=1,
+            )]
+            agents = hits['Agente'].dropna().astype(str).str.strip()
+            agents = agents[agents.ne('')].unique()
+            return agents[0] if len(agents) == 1 else pd.NA
+
+        raw = contracts.copy()
+        raw['Mese'] = quote_dates.map(month)
+        raw['Attivazione'] = parse_dates(raw['Prospected activation date']).map(month)
+        raw['Chiusura'] = parse_dates(raw['Point of delivery: Closing date']).map(month)
+        raw['Stato'] = clean_status(raw['Status from PoD'])
+        raw['Segmento forecast'] = raw['Customer type'].map({'Person': 'RES', 'Partita IVA': 'IVA'})
+        raw['POD forecast'] = raw['Point of delivery: Point of delivery Name'].astype(str).str.strip()
+
+        metric_rows = []
+        agent_rates = {}
+        mapped_datasets = []
+
+        for model in ['Base', 'Avanzato']:
+            cfg = get_cfg(model)
+            if model == 'Avanzato':
+                cfg['Decorrenza'] = cfg['DECORRENZA'].apply(parse_decorrenza)
+                cfg['Gruppo mapping'] = cfg.apply(
+                    lambda row: '|'.join(sorted([
+                        norm(value) for value in row['Sub IDs'] + row['Promo IDs'] if norm(value)
+                    ])), axis=1
+                )
+                data = raw.copy()
+                data['Mese sottoscrizione forecast'] = data['Mese']
+                combos = data[['Subchannel', 'Promo code', 'Mese sottoscrizione forecast']].drop_duplicates().reset_index(drop=True)
+                mapping_input = combos.rename(columns={'Mese sottoscrizione forecast': 'Mese sottoscrizione'})
+                selected = mapping_input.apply(lambda row: select_configuration(row, cfg), axis=1)
+                selected.columns = [
+                    'Agente', 'Esito overview', 'Decorrenza overview',
+                    'Gettone RES overview', 'Gettone IVA overview',
+                    'Ricorrente RES overview', 'Ricorrente IVA overview',
+                    'Partner storico overview'
+                ]
+                combos = pd.concat([combos, selected], axis=1)
+                data = data.merge(combos, on=['Subchannel','Promo code','Mese sottoscrizione forecast'], how='left')
+                valid_cfg = cfg[cfg['Agente'].notna() & cfg['Agente'].astype(str).str.strip().ne('')]
+                one = valid_cfg.sort_values('Decorrenza').drop_duplicates('Agente', keep='last').set_index('Agente')
+            else:
+                combos = raw[['Subchannel','Promo code']].drop_duplicates()
+                combos['Agente'] = combos.apply(lambda row: map_agent(row, cfg), axis=1)
+                data = raw.merge(combos, on=['Subchannel','Promo code'], how='left')
+                valid_cfg = cfg[cfg['Agente'].notna() & cfg['Agente'].astype(str).str.strip().ne('')]
+                one = valid_cfg.drop_duplicates('Agente').set_index('Agente')
+            data['Modello forecast'] = model
+            mapped_datasets.append(data)
+
+            for agent in one.index:
+                c = one.loc[agent]
+                agent_rates[agent] = {
+                    'RES': safe_int(c.get('GETTONE RES', 0)),
+                    'IVA': safe_int(c.get('GETTONE IVA', 0)),
+                    'Modello': model,
+                }
+
+            for current_month in year_months:
+                # Non calcolare né simulare mesi successivi al contenuto del report.
+                # Verranno valorizzati in seguito usando l'ultimo mese reale disponibile.
+                if current_month > report_cutoff:
+                    continue
+                monthly = data[data['Mese'] == current_month].copy()
+                if model == 'Avanzato':
+                    monthly['Gettone overview'] = monthly.apply(
+                        lambda row: row['Gettone RES overview'] if row['Customer type'] == 'Person'
+                        else (row['Gettone IVA overview'] if row['Customer type'] == 'Partita IVA' else pd.NA), axis=1
+                    )
+                    monthly['Ricorrente overview'] = monthly.apply(
+                        lambda row: row['Ricorrente RES overview'] if row['Customer type'] == 'Person'
+                        else (row['Ricorrente IVA overview'] if row['Customer type'] == 'Partita IVA' else pd.NA), axis=1
+                    )
+                    valid = monthly[
+                        monthly['Agente'].notna() & monthly['Gettone overview'].notna()
+                        & monthly['Ricorrente overview'].notna()
+                        & monthly['Stato'].isin(GETTONE_STATI_VALIDI)
+                    ]
+                else:
+                    valid = monthly[monthly['Agente'].notna() & monthly['Stato'].isin(GETTONE_STATI_VALIDI)]
+                for agent, group in valid.groupby('Agente'):
+                    if agent not in one.index:
+                        continue
+                    c = one.loc[agent]
+                    base_value = 0.0
+                    for segment in ['RES', 'IVA']:
+                        segment_group = group[group['Segmento forecast'] == segment]
+                        if model == 'Avanzato':
+                            count = len(segment_group)
+                            base_value += safe_float(segment_group['Gettone overview'].sum())
+                        else:
+                            amount_col = 'GETTONE RES' if segment == 'RES' else 'GETTONE IVA'
+                            count = len(segment_group) if pd.notna(c.get(amount_col)) else 0
+                            base_value += count * safe_float(c.get(amount_col, 0))
+                        metric_rows.append([agent, current_month, f'Contratti {segment}', count])
+                    metric_rows.append([agent, current_month, 'Gettoni base', base_value])
+
+                for agent in one.index:
+                    c = one.loc[agent]
+                    positive = 0.0
+                    negative = 0.0
+                    if model == 'Base':
+                        if pd.notna(c.get('PREMIO UTENTI ATTIVI')) and pd.notna(c.get('MESI CALCOLO PREMIO DA ATTIVAZIONE')):
+                            cohort = current_month - pd.DateOffset(months=int(c['MESI CALCOLO PREMIO DA ATTIVAZIONE']))
+                            n = len(data[
+                                (data['Agente'] == agent)
+                                & (data['Attivazione'] == cohort)
+                                & (data['Stato'] == 'ATTIVO')
+                            ])
+                            positive = n * float(c['PREMIO UTENTI ATTIVI'])
+                        if pd.notna(c.get('STORNO UTENTI CESSATI')) and pd.notna(c.get('MESI CALCOLO STORNO DA ATTIVAZIONE')):
+                            cohort = current_month - pd.DateOffset(
+                                months=int(c['MESI CALCOLO STORNO DA ATTIVAZIONE']) + 2
+                            )
+                            n = len(data[
+                                (data['Agente'] == agent)
+                                & (data['Mese'] == cohort)
+                                & (data['Stato'] == 'CHIUSO')
+                            ])
+                            negative = -n * abs(float(c['STORNO UTENTI CESSATI']))
+                    else:
+                        agent_data = data[data['Agente'] == agent].copy()
+                        agent_data['Decorrenza ricorrente overview'] = agent_data['Prospected activation date'].pipe(parse_dates).apply(
+                            lambda value: pd.NaT if pd.isna(value) else (
+                                value.to_period('M').to_timestamp() if value.day == 1
+                                else value.to_period('M').to_timestamp() + pd.offsets.MonthBegin(1)
+                            )
+                        )
+                        agent_data['Ricorrente overview'] = agent_data.apply(
+                            lambda row: row['Ricorrente RES overview'] if row['Customer type'] == 'Person'
+                            else (row['Ricorrente IVA overview'] if row['Customer type'] == 'Partita IVA' else pd.NA), axis=1
+                        )
+                        active = agent_data[
+                            (agent_data['Stato'] == 'ATTIVO')
+                            & agent_data['Ricorrente overview'].notna()
+                            & (agent_data['Decorrenza ricorrente overview'] <= current_month)
+                            & (agent_data['Chiusura'].isna() | (current_month < agent_data['Chiusura']))
+                        ]
+                        positive = safe_float(active['Ricorrente overview'].sum())
+                        agent_data['Gettone overview'] = agent_data.apply(
+                            lambda row: row['Gettone RES overview'] if row['Customer type'] == 'Person'
+                            else (row['Gettone IVA overview'] if row['Customer type'] == 'Partita IVA' else pd.NA),
+                            axis=1,
+                        )
+                        closed = agent_data[
+                            agent_data['Gettone overview'].notna()
+                            & agent_data['Ricorrente overview'].notna()
+                            & agent_data['Stato'].isin(GETTONE_STATI_VALIDI)
+                            & (agent_data['Chiusura'] == current_month)
+                        ]
+                        for _, closed_row in closed.iterrows():
+                            gettone = safe_float(
+                                closed_row['Gettone RES overview'] if closed_row['Customer type'] == 'Person'
+                                else closed_row['Gettone IVA overview']
+                            )
+                            negative -= gettone * malus_fascia(
+                                months_lived(closed_row['Attivazione'], closed_row['Chiusura'])
+                            )[1]
+                    metric_rows.extend([
+                        [agent, current_month, 'Premialità e ricorrenti', positive],
+                        [agent, current_month, 'Storni e malus', negative],
+                    ])
+
+        # Cohort Churn per tutti gli agenti, unendo mapping Base e Avanzato senza duplicare il contratto.
+        churn_source = pd.concat(mapped_datasets, ignore_index=True)
+        churn_source = churn_source[churn_source['Agente'].notna()].copy()
+        churn_source['Chiave churn'] = (
+            churn_source['POD forecast'].fillna('') + '|'
+            + churn_source['Attivazione'].astype(str)
+            + '|' + churn_source['Agente'].astype(str)
+        )
+        churn_source = churn_source.drop_duplicates('Chiave churn')
+        for observation_month in year_months:
+            if observation_month > report_cutoff:
+                continue
+            cohort_month = observation_month - pd.DateOffset(months=13)
+            cohort = churn_source[
+                (churn_source['Attivazione'] == cohort_month)
+                & (churn_source['Stato'] != 'ANNULLATO')
+                & churn_source['POD forecast'].ne('')
+            ]
+            for agent, group in cohort.groupby('Agente'):
+                switch_out = group['Chiusura'].between(
+                    cohort_month + pd.DateOffset(months=1),
+                    cohort_month + pd.DateOffset(months=12),
+                    inclusive='both',
+                ).sum()
+                churn = (switch_out / len(group) * 100) if len(group) else None
+                metric_rows.append([agent, observation_month, 'Cohort churn 12 mesi', churn])
+
+        metrics = pd.DataFrame(
+            metric_rows, columns=['Agente', 'Mese', 'Metrica', 'Valore']
+        ).groupby(['Agente', 'Mese', 'Metrica'], as_index=False)['Valore'].sum()
+        all_agents = sorted(set(metrics['Agente'].dropna()) | set(agent_rates))
+
+        def base_grid(metric):
+            subset = metrics[metrics['Metrica'] == metric]
+            pivot = subset.pivot_table(
+                index='Agente', columns='Mese', values='Valore', aggfunc='sum'
+            ).reindex(index=all_agents, columns=year_months)
+            # I mesi trascorsi e il mese cutoff non vengono mai stimati. Solo mesi futuri senza traccia.
+            for agent in pivot.index:
+                history = [
+                    float(pivot.loc[agent, m]) for m in year_months
+                    if m <= report_cutoff and pd.notna(pivot.loc[agent, m])
+                ]
+                seed = history[-1] if history else 0.0
+                for m in year_months:
+                    if m in forecast_months and pd.isna(pivot.loc[agent, m]):
+                        pivot.loc[agent, m] = seed
+            pivot.columns = month_labels
+            return pivot
+
+        res_grid = base_grid('Contratti RES').fillna(0).round().astype(int)
+        iva_grid = base_grid('Contratti IVA').fillna(0).round().astype(int)
+        editable_columns = month_labels
+        disabled_months = [
+            label for label, current_month in zip(month_labels, year_months)
+            if current_month not in forecast_months
+        ]
+
+        # Gli editor lavorano solo sui 12 mesi. La colonna Totali viene ricostruita
+        # dopo ogni applicazione, evitando che Streamlit conservi un totale obsoleto.
+        state_res_key = f'forecast_res_values_{selected_year}'
+        state_iva_key = f'forecast_iva_values_{selected_year}'
+        if state_res_key not in st.session_state:
+            st.session_state[state_res_key] = res_grid[editable_columns].copy()
+        if state_iva_key not in st.session_state:
+            st.session_state[state_iva_key] = iva_grid[editable_columns].copy()
+
+        st.subheader('Contratti validi RES')
+        st.caption('Sono modificabili soltanto i mesi futuri stimati.')
+        with st.form(f'forecast_form_{selected_year}'):
+            pending_res = st.data_editor(
+                st.session_state[state_res_key],
+                use_container_width=True,
+                disabled=disabled_months,
+                key=f'forecast_res_editor_{selected_year}',
+                column_config={
+                    label: st.column_config.NumberColumn(
+                        label, min_value=0, step=1, format='%d'
+                    ) for label in editable_columns
+                },
+            ).astype(int)
+
+            st.subheader('Contratti validi IVA')
+            pending_iva = st.data_editor(
+                st.session_state[state_iva_key],
+                use_container_width=True,
+                disabled=disabled_months,
+                key=f'forecast_iva_editor_{selected_year}',
+                column_config={
+                    label: st.column_config.NumberColumn(
+                        label, min_value=0, step=1, format='%d'
+                    ) for label in editable_columns
+                },
+            ).astype(int)
+            apply_forecast = st.form_submit_button(
+                'Applica stime e aggiorna totali',
+                use_container_width=True,
+                type='primary',
+            )
+
+        if apply_forecast:
+            st.session_state[state_res_key] = pending_res.copy()
+            st.session_state[state_iva_key] = pending_iva.copy()
+
+        edited_res = st.session_state[state_res_key].copy()
+        edited_iva = st.session_state[state_iva_key].copy()
+        edited_res['Totali'] = edited_res[month_labels].sum(axis=1).astype(int)
+        edited_iva['Totali'] = edited_iva[month_labels].sum(axis=1).astype(int)
+
+        st.caption('Riepilogo aggiornato RES')
+        st.dataframe(
+            edited_res.style.format(lambda value: f"{int(value):,}".replace(',', '.')),
+            use_container_width=True,
+        )
+        st.caption('Riepilogo aggiornato IVA')
+        st.dataframe(
+            edited_iva.style.format(lambda value: f"{int(value):,}".replace(',', '.')),
+            use_container_width=True,
+        )
+
+        premium_grid = base_grid('Premialità e ricorrenti').fillna(0).round().astype(int)
+        negative_grid = base_grid('Storni e malus').fillna(0).round().astype(int)
+        churn_grid = base_grid('Cohort churn 12 mesi').round(0).astype('Int64')
+        premium_grid['Totali'] = premium_grid[month_labels].sum(axis=1).astype(int)
+        negative_grid['Totali'] = negative_grid[month_labels].sum(axis=1).astype(int)
+        churn_grid['Totali'] = churn_grid[month_labels].mean(axis=1).round(0).astype('Int64')
+
+        # Le commissioni dei mesi futuri reagiscono alle stime manuali RES/IVA.
+        net_grid = pd.DataFrame(0, index=all_agents, columns=month_labels, dtype=int)
+        actual_base = base_grid('Gettoni base').fillna(0)
+        for agent in all_agents:
+            res_rate = agent_rates.get(agent, {}).get('RES', 0)
+            iva_rate = agent_rates.get(agent, {}).get('IVA', 0)
+            for label, current_month in zip(month_labels, year_months):
+                if current_month in forecast_months:
+                    gettoni = int(edited_res.loc[agent, label]) * res_rate + int(edited_iva.loc[agent, label]) * iva_rate
+                else:
+                    gettoni = int(round(float(actual_base.loc[agent, label]))) if pd.notna(actual_base.loc[agent, label]) else 0
+                net_grid.loc[agent, label] = int(
+                    round(gettoni + premium_grid.loc[agent, label] + negative_grid.loc[agent, label])
+                )
+
+        net_grid['Totali'] = net_grid.sum(axis=1).astype(int)
+
+        def format_integer_it(value, suffix=''):
+            if pd.isna(value):
+                return 'nd' if suffix == '%' else '—'
+            return f"{int(value):,}".replace(',', '.') + suffix
+
+        def show_integer_table(title, frame, suffix=''):
+            st.subheader(title)
+            display = frame.copy()
+            st.dataframe(
+                display.style.format(lambda value: format_integer_it(value, suffix)),
+                use_container_width=True,
+            )
+
+        show_integer_table('Premialità e ricorrenti', premium_grid)
+        show_integer_table('Storni e malus', negative_grid)
+        show_integer_table('Commissioni nette', net_grid)
+        show_integer_table('Cohort Churn 12 mesi', churn_grid, '%')
+
+        def overview_single_sheet_export():
+            output = io.BytesIO()
+            churn_export = churn_grid.reset_index().astype(object)
+            churn_export = churn_export.where(pd.notna(churn_export), 'nd')
+            tables = [
+                ('Contratti validi RES', edited_res.reset_index()),
+                ('Contratti validi IVA', edited_iva.reset_index()),
+                ('Premialità e ricorrenti', premium_grid.reset_index()),
+                ('Storni e malus', negative_grid.reset_index()),
+                ('Commissioni nette', net_grid.reset_index()),
+                ('Cohort Churn 12 mesi', churn_export),
+            ]
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                row_pos = 0
+                for title, table in tables:
+                    pd.DataFrame([[title]]).to_excel(writer, sheet_name='Overview & Forecast', startrow=row_pos, index=False, header=False)
+                    row_pos += 1
+                    table.to_excel(writer, sheet_name='Overview & Forecast', startrow=row_pos, index=False)
+                    row_pos += len(table) + 2
+                ws = writer.book['Overview & Forecast']
+                # Mantiene valori numerici e applica un formato intero con separatore delle migliaia.
+                for row in ws.iter_rows():
+                    for cell in row[1:]:
+                        if isinstance(cell.value, (int, float)):
+                            cell.number_format = '#,##0'
+                for column in ws.columns:
+                    values = [str(cell.value) if cell.value is not None else '' for cell in column]
+                    ws.column_dimensions[column[0].column_letter].width = min(max(max(map(len, values), default=8) + 2, 10), 28)
+            output.seek(0)
+            return output.getvalue()
+
+        forecast_export = overview_single_sheet_export()
+        download_slot.download_button(
+            'Scarica Overview & Forecast XLSX',
+            forecast_export,
+            file_name=f'overview_forecast_{selected_year}.xlsx',
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            use_container_width=True,
+        )
+        st.caption(
+            f'Ultimo mese presente nel report: {report_cutoff:%m/%Y}. '
+            'Le stime partono esclusivamente dal mese successivo e usano come valore iniziale '
+            'l’ultimo dato disponibile, anche se parziale.'
+        )
+        render_footer()
         st.stop()
 
     if module == 'Commissioni Base':
@@ -527,6 +1073,7 @@ if contracts_file and mapping_file:
         base_missing = base_required - set(mapping.columns)
         if base_missing:
             st.error('Colonne mancanti nel foglio Base: ' + ', '.join(sorted(base_missing)))
+            render_footer()
             st.stop()
 
         base_configs = mapping.copy()
@@ -672,19 +1219,33 @@ if contracts_file and mapping_file:
         st.markdown('### Riepilogo economico')
         st.caption(f'Competenza {competence:%m/%Y}')
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric('Gettone base', f"€ {base_gettoni['Importo'].sum():,.2f}")
-        c2.metric('Premialità', f"€ {base_premi['Importo'].sum():,.2f}")
-        c3.metric('Storni', f"€ {base_storni['Importo'].sum():,.2f}")
+        render_light_metric(c1, 'Gettone base', f"€ {base_gettoni['Importo'].sum():,.2f}")
+        render_light_metric(c2, 'Premialità', f"€ {base_premi['Importo'].sum():,.2f}")
+        render_light_metric(c3, 'Storni', f"€ {base_storni['Importo'].sum():,.2f}")
         c4.metric('Totale netto', f"€ {base_movements['Importo'].sum():,.2f}")
 
         st.subheader('Sintesi agenti e report individuali')
         base_partners = sorted(
-            set(base_gettoni['Partner'].dropna())
+            set(base_df.loc[
+                (base_df['Mese sottoscrizione'] == competence) & base_df['Partner'].notna(),
+                'Partner',
+            ])
             | set(base_premi['Partner'].dropna())
             | set(base_storni['Partner'].dropna())
         )
         for partner in base_partners:
             p_gettoni = base_gettoni[base_gettoni['Partner'] == partner].copy()
+            p_nonvalid = base_df[
+                (base_df['Partner'] == partner)
+                & (base_df['Mese sottoscrizione'] == competence)
+                & ~base_df.index.isin(p_gettoni.index)
+            ].copy()
+            p_nonvalid['Motivo non validità'] = p_nonvalid.apply(
+                lambda row: 'Stato non commissionabile'
+                if row['Stato'] not in GETTONE_STATI_VALIDI
+                else ('Gettone segmento mancante' if pd.isna(row['Gettone base']) else 'Escluso dal gettone'),
+                axis=1,
+            )
             p_premi = base_premi[base_premi['Partner'] == partner].copy()
             p_storni = base_storni[base_storni['Partner'] == partner].copy()
             amount_base = float(p_gettoni['Importo'].sum())
@@ -692,14 +1253,16 @@ if contracts_file and mapping_file:
             amount_storno = float(p_storni['Importo'].sum())
             amount_netto = amount_base + amount_premio + amount_storno
             p_summary = pd.DataFrame([
-                {'Voce': 'Contratti generati nel mese', 'Numero': len(p_gettoni), 'Importo': amount_base},
+                {'Voce': 'Contratti validi', 'Numero': len(p_gettoni), 'Importo': amount_base},
+                {'Voce': 'Contratti non validi', 'Numero': len(p_nonvalid), 'Importo': 0.0},
                 {'Voce': 'Utenti attivi premiati', 'Numero': len(p_premi), 'Importo': amount_premio},
                 {'Voce': 'Utenti cessati stornati', 'Numero': len(p_storni), 'Importo': amount_storno},
                 {'Voce': 'TOTALE NETTO', 'Numero': pd.NA, 'Importo': amount_netto},
             ])
             partner_export = to_excel({
                 'Sintesi': p_summary,
-                'Contratti del mese': p_gettoni,
+                'Contratti validi': p_gettoni,
+                'Non validi': p_nonvalid,
                 'Premio utenti attivi': p_premi,
                 'Storno utenti cessati': p_storni,
             })
@@ -711,9 +1274,9 @@ if contracts_file and mapping_file:
                 net_col.metric('Totale netto',f'€ {amount_netto:,.2f}')
                 action_col.download_button('Scarica report',partner_export,file_name=f'report_base_{safe_partner}_{competence:%Y_%m}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'base_{safe_partner}_{competence:%Y_%m}')
                 k1,k2,k3=st.columns(3)
-                k1.metric('Gettone base',f'€ {amount_base:,.2f}')
-                k2.metric('Premialità',f'€ {amount_premio:,.2f}')
-                k3.metric('Storni',f'€ {amount_storno:,.2f}')
+                render_light_metric(k1, 'Gettone base', f'€ {amount_base:,.2f}')
+                render_light_metric(k2, 'Premialità', f'€ {amount_premio:,.2f}')
+                render_light_metric(k3, 'Storni', f'€ {amount_storno:,.2f}')
                 with st.expander('Visualizza dettagli'):
                     st.dataframe(p_summary,use_container_width=True,hide_index=True)
 
@@ -753,6 +1316,7 @@ if contracts_file and mapping_file:
             file_name=f'commissioni_base_{competence:%Y_%m}.xlsx',
             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
+        render_footer()
         st.stop()
 
     map_required = {
@@ -763,6 +1327,7 @@ if contracts_file and mapping_file:
     map_missing = map_required - set(mapping.columns)
     if map_missing:
         st.error('Colonne mancanti nel file identificatori: ' + ', '.join(sorted(map_missing)))
+        render_footer()
         st.stop()
 
     configs = mapping.copy()
@@ -980,6 +1545,7 @@ if contracts_file and mapping_file:
 
         st.caption('I report trimestrali e annuali compaiono soltanto quando tutte le rilevazioni necessarie sono disponibili.')
         # Nessun upload o download di registro: lo storico è ricostruito dal report.
+        render_footer()
         st.stop()
 
     # Gettone Avanzato: stati validi = tutti tranne ANNULLATO e SOSPESO (CHIUSO incluso).
@@ -1093,16 +1659,31 @@ if contracts_file and mapping_file:
     st.markdown('### Riepilogo economico')
     st.caption(f'Competenza {competence:%m/%Y}')
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric('Gettoni iniziali', f"€ {initial['Importo'].sum():,.2f}")
-    c2.metric('Ricorrenti', f"€ {recurring['Importo'].sum():,.2f}")
-    c3.metric('Nuovi malus', f"€ {malus_new['Importo'].sum():,.2f}")
-    c4.metric('Totale', f"€ {movements['Importo'].sum():,.2f}")
+    render_light_metric(c1, 'Gettoni iniziali', f"€ {initial['Importo'].sum():,.2f}")
+    render_light_metric(c2, 'Ricorrenti', f"€ {recurring['Importo'].sum():,.2f}")
+    render_light_metric(c3, 'Nuovi malus', f"€ {malus_new['Importo'].sum():,.2f}")
+    c4.metric('Totale netto', f"€ {movements['Importo'].sum():,.2f}")
 
     st.subheader('Sintesi partner e report individuali')
     st.dataframe(summary, use_container_width=True)
-    advanced_partners = sorted(set(initial['Partner'].dropna()) | set(recurring['Partner'].dropna()) | set(malus_new['Partner'].dropna()))
+    advanced_partners = sorted(
+        set(df.loc[in_competence & df['Partner'].notna(), 'Partner'])
+        | set(recurring['Partner'].dropna())
+        | set(malus_new['Partner'].dropna())
+    )
     for partner in advanced_partners:
         p_initial = initial[initial['Partner'] == partner].copy()
+        p_nonvalid = df[
+            (df['Partner'] == partner)
+            & (df['Mese sottoscrizione'] == competence)
+            & ~df.index.isin(p_initial.index)
+        ].copy()
+        p_nonvalid['Motivo non validità'] = p_nonvalid.apply(
+            lambda row: 'Stato non commissionabile'
+            if row['Stato'] not in GETTONE_STATI_VALIDI
+            else ('Configurazione economica incompleta' if pd.isna(row['Gettone']) else 'Escluso dal gettone'),
+            axis=1,
+        )
         p_recurring = recurring[recurring['Partner'] == partner].copy()
         p_malus = malus_new[malus_new['Partner'] == partner].copy()
         p_100 = p_malus[p_malus['Fascia malus'] == '100%'].copy()
@@ -1112,7 +1693,8 @@ if contracts_file and mapping_file:
         malus_amount = float(p_malus['Importo'].sum())
         net_amount = base_amount + recurring_amount + malus_amount
         p_summary = pd.DataFrame([
-            {'Voce': 'Contratti con gettone base', 'Numero': len(p_initial), 'Importo': base_amount},
+            {'Voce': 'Contratti validi', 'Numero': len(p_initial), 'Importo': base_amount},
+            {'Voce': 'Contratti non validi', 'Numero': len(p_nonvalid), 'Importo': 0.0},
             {'Voce': 'Ricorrenti', 'Numero': len(p_recurring), 'Importo': recurring_amount},
             {'Voce': 'Malus 100%', 'Numero': len(p_100), 'Importo': float(p_100['Importo'].sum())},
             {'Voce': 'Malus 50%', 'Numero': len(p_50), 'Importo': float(p_50['Importo'].sum())},
@@ -1121,7 +1703,8 @@ if contracts_file and mapping_file:
         ])
         partner_export = to_excel({
             'Sintesi': p_summary,
-            'Contratti del mese': p_initial,
+            'Contratti validi': p_initial,
+            'Non validi': p_nonvalid,
             'Ricorrenti': p_recurring,
             'Malus 100%': p_100,
             'Malus 50%': p_50,
@@ -1134,9 +1717,9 @@ if contracts_file and mapping_file:
             net_col.metric('Totale netto',f'€ {net_amount:,.2f}')
             action_col.download_button('Scarica report',partner_export,file_name=f'report_avanzato_{safe_partner}_{competence:%Y_%m}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'avanzato_{safe_partner}_{competence:%Y_%m}')
             k1,k2,k3=st.columns(3)
-            k1.metric('Gettone base',f'€ {base_amount:,.2f}')
-            k2.metric('Ricorrenti',f'€ {recurring_amount:,.2f}')
-            k3.metric('Malus',f'€ {malus_amount:,.2f}')
+            render_light_metric(k1, 'Gettone base', f'€ {base_amount:,.2f}')
+            render_light_metric(k2, 'Ricorrenti', f'€ {recurring_amount:,.2f}')
+            render_light_metric(k3, 'Malus', f'€ {malus_amount:,.2f}')
             with st.expander('Visualizza dettagli'):
                 st.dataframe(p_summary,use_container_width=True,hide_index=True)
     st.subheader('Qualità dei dati')
@@ -1182,3 +1765,5 @@ if contracts_file and mapping_file:
         st.download_button('Scarica risultato completo', export, file_name=f'commissioni_{competence:%Y_%m}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 else:
     st.warning('Carica il report contratti e il file identificatori per eseguire il calcolo.')
+
+render_footer()
