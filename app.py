@@ -57,7 +57,7 @@ h1,h2,h3{color:var(--ink);letter-spacing:-.025em}hr{border-color:var(--line)}
   font-weight:400;
 }
 [data-testid="stFileUploaderDropzone"] button {
-  /* Il testo inglese è un nodo diretto del bottone, non sempre racchiuso in un elemento. */
+  /* Il testo inglese può essere un nodo diretto del bottone. */
   font-size:0!important;
   color:transparent!important;
   white-space:nowrap;
@@ -919,58 +919,48 @@ if contracts_file and mapping_file:
         if state_iva_key not in st.session_state:
             st.session_state[state_iva_key] = iva_grid[editable_columns].copy()
 
+        def update_forecast_totals():
+            res_state = st.session_state.get(f'forecast_res_editor_{selected_year}', {})
+            iva_state = st.session_state.get(f'forecast_iva_editor_{selected_year}', {})
+
+            def apply_edits(base_frame, editor_state):
+                updated = base_frame.copy()
+                for row_pos, changes in editor_state.get('edited_rows', {}).items():
+                    row_pos = int(row_pos)
+                    for column, value in changes.items():
+                        if column in month_labels and value is not None:
+                            updated.iat[row_pos, updated.columns.get_loc(column)] = int(value)
+                return updated[month_labels].astype(int)
+
+            st.session_state[state_res_key] = apply_edits(st.session_state[state_res_key], res_state)
+            st.session_state[state_iva_key] = apply_edits(st.session_state[state_iva_key], iva_state)
+
+        editor_res = st.session_state[state_res_key].copy()
+        editor_iva = st.session_state[state_iva_key].copy()
+        editor_res['Totali'] = editor_res[month_labels].sum(axis=1).astype(int)
+        editor_iva['Totali'] = editor_iva[month_labels].sum(axis=1).astype(int)
+        disabled_with_total = disabled_months + ['Totali']
+        editor_columns = editable_columns + ['Totali']
+
         st.subheader('Contratti validi RES')
-        st.caption('Sono modificabili soltanto i mesi futuri stimati.')
-        with st.form(f'forecast_form_{selected_year}'):
-            pending_res = st.data_editor(
-                st.session_state[state_res_key],
-                use_container_width=True,
-                disabled=disabled_months,
-                key=f'forecast_res_editor_{selected_year}',
-                column_config={
-                    label: st.column_config.NumberColumn(
-                        label, min_value=0, step=1, format='%d'
-                    ) for label in editable_columns
-                },
-            ).astype(int)
+        st.caption('Sono modificabili soltanto i mesi futuri stimati. Totali e commissioni si aggiornano automaticamente.')
+        st.data_editor(
+            editor_res, use_container_width=True, disabled=disabled_with_total,
+            key=f'forecast_res_editor_{selected_year}', on_change=update_forecast_totals,
+            column_config={label: st.column_config.NumberColumn(label, min_value=0, step=1, format='%d') for label in editor_columns},
+        )
 
-            st.subheader('Contratti validi IVA')
-            pending_iva = st.data_editor(
-                st.session_state[state_iva_key],
-                use_container_width=True,
-                disabled=disabled_months,
-                key=f'forecast_iva_editor_{selected_year}',
-                column_config={
-                    label: st.column_config.NumberColumn(
-                        label, min_value=0, step=1, format='%d'
-                    ) for label in editable_columns
-                },
-            ).astype(int)
-            apply_forecast = st.form_submit_button(
-                'Applica stime e aggiorna totali',
-                use_container_width=True,
-                type='primary',
-            )
-
-        if apply_forecast:
-            st.session_state[state_res_key] = pending_res.copy()
-            st.session_state[state_iva_key] = pending_iva.copy()
+        st.subheader('Contratti validi IVA')
+        st.data_editor(
+            editor_iva, use_container_width=True, disabled=disabled_with_total,
+            key=f'forecast_iva_editor_{selected_year}', on_change=update_forecast_totals,
+            column_config={label: st.column_config.NumberColumn(label, min_value=0, step=1, format='%d') for label in editor_columns},
+        )
 
         edited_res = st.session_state[state_res_key].copy()
         edited_iva = st.session_state[state_iva_key].copy()
         edited_res['Totali'] = edited_res[month_labels].sum(axis=1).astype(int)
         edited_iva['Totali'] = edited_iva[month_labels].sum(axis=1).astype(int)
-
-        st.caption('Riepilogo aggiornato RES')
-        st.dataframe(
-            edited_res.style.format(lambda value: f"{int(value):,}".replace(',', '.')),
-            use_container_width=True,
-        )
-        st.caption('Riepilogo aggiornato IVA')
-        st.dataframe(
-            edited_iva.style.format(lambda value: f"{int(value):,}".replace(',', '.')),
-            use_container_width=True,
-        )
 
         premium_grid = base_grid('Premialità e ricorrenti').fillna(0).round().astype(int)
         negative_grid = base_grid('Storni e malus').fillna(0).round().astype(int)
