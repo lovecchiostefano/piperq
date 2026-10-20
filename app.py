@@ -649,7 +649,17 @@ def to_excel(sheets):
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as writer:
         for name, frame in sheets.items():
-            frame.to_excel(writer, sheet_name=name[:31], index=False)
+            export_frame = frame.copy()
+            columns_to_remove = [
+                column for column in [
+                    'Point of delivery: Point of delivery Name',
+                    'Point of Delivery',
+                ]
+                if column in export_frame.columns
+            ]
+            if columns_to_remove:
+                export_frame = export_frame.drop(columns=columns_to_remove)
+            export_frame.to_excel(writer, sheet_name=name[:31], index=False)
             ws = writer.book[name[:31]]
             ws.freeze_panes = 'A2'
             ws.auto_filter.ref = ws.dimensions
@@ -659,6 +669,16 @@ def to_excel(sheets):
                 ws.column_dimensions[col[0].column_letter].width = width
     out.seek(0)
     return out.getvalue()
+
+
+@st.cache_data(show_spinner=False, max_entries=48)
+def reports_to_zip(reports):
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        for file_name, file_bytes in reports:
+            archive.writestr(file_name, file_bytes)
+    output.seek(0)
+    return output.getvalue()
 
 
 MONTH_OPTIONS = pd.period_range('2025-01', '2032-12', freq='M').astype(str).tolist()
@@ -707,7 +727,7 @@ if contracts_file and mapping_file:
         st.stop()
 
     required = {
-        'Contract quote date', 'Status from PoD', 'Subscription Name',
+        'Contract: Customer Signed Date', 'Status from PoD', 'Subscription Name',
         'Customer type', 'Subchannel', 'Promo code',
         'Prospected activation date', 'Point of delivery: Closing date',
         'Point of delivery: Point of delivery Name'
@@ -726,9 +746,9 @@ if contracts_file and mapping_file:
         st.header('Overview & Forecast')
         st.caption(
             'I mesi presenti nel report restano sempre effettivi, incluso l’ultimo mese parziale. '
-            'Sono stimati soltanto i mesi successivi all’ultima Contract quote date disponibile.'
+            'Sono stimati soltanto i mesi successivi all’ultima Customer Signed Date disponibile.'
         )
-        quote_dates = parse_dates(contracts['Contract quote date'])
+        quote_dates = parse_dates(contracts['Contract: Customer Signed Date'])
         available_years = sorted(quote_dates.dropna().dt.year.unique().astype(int).tolist())
         if not available_years:
             st.error('Nessun anno disponibile nel report.')
@@ -887,10 +907,12 @@ if contracts_file and mapping_file:
                     negative = 0.0
                     if model == 'Base':
                         if pd.notna(c.get('PREMIO UTENTI ATTIVI')) and pd.notna(c.get('MESI CALCOLO PREMIO DA ATTIVAZIONE')):
-                            cohort = current_month - pd.DateOffset(months=int(c['MESI CALCOLO PREMIO DA ATTIVAZIONE']))
+                            cohort = current_month - pd.DateOffset(
+                                months=int(c['MESI CALCOLO PREMIO DA ATTIVAZIONE']) + 1
+                            )
                             n = len(data[
                                 (data['Agente'] == agent)
-                                & (data['Attivazione'] == cohort)
+                                & (data['Mese'] == cohort)
                                 & (data['Stato'] == 'ATTIVO')
                             ])
                             positive = n * float(c['PREMIO UTENTI ATTIVI'])
@@ -1109,7 +1131,13 @@ if contracts_file and mapping_file:
                     round(gettoni + premium_grid.loc[agent, label] + negative_grid.loc[agent, label])
                 )
 
-        net_grid['Totali'] = net_grid.sum(axis=1).astype(int)
+        net_grid['Totali'] = net_grid[month_labels].sum(axis=1).astype(int)
+        # Netto OPEX = commissioni nette escluse premialità e ricorrenti.
+        # Mantiene invece storni e malus, che rettificano il costo commissionale.
+        opex_grid = (
+            net_grid[month_labels] - premium_grid[month_labels]
+        ).round().astype(int)
+        opex_grid['Totali'] = opex_grid[month_labels].sum(axis=1).astype(int)
 
         def format_integer_it(value, suffix=''):
             if pd.isna(value):
@@ -1135,6 +1163,11 @@ if contracts_file and mapping_file:
         with tab_rettifiche:
             show_integer_table('Storni e malus', negative_grid)
         with tab_commissioni:
+            show_integer_table('Netto OPEX', opex_grid)
+            st.caption(
+                'Netto OPEX = Commissioni nette al netto di premialità e ricorrenti; '
+                'storni e malus restano inclusi.'
+            )
             show_integer_table('Commissioni nette', net_grid)
             monthly_net = net_grid[month_labels].sum(axis=0)
             st.bar_chart(monthly_net.rename('Commissioni nette'))
@@ -1146,7 +1179,7 @@ if contracts_file and mapping_file:
             output = io.BytesIO()
             churn_export = churn_grid.reset_index().astype(object)
             churn_export = churn_export.where(pd.notna(churn_export), 'nd')
-            export_frames = [edited_res, edited_iva, premium_grid, negative_grid, net_grid, churn_grid]
+            export_frames = [edited_res, edited_iva, premium_grid, negative_grid, opex_grid, net_grid, churn_grid]
             for frame in export_frames:
                 frame.index.name = 'Agente'
             churn_export = churn_grid.reset_index().astype(object)
@@ -1156,6 +1189,7 @@ if contracts_file and mapping_file:
                 ('Contratti validi IVA', edited_iva.reset_index()),
                 ('Premialità e ricorrenti', premium_grid.reset_index()),
                 ('Storni e malus', negative_grid.reset_index()),
+                ('Netto OPEX', opex_grid.reset_index()),
                 ('Commissioni nette', net_grid.reset_index()),
                 ('Cohort Churn 12 mesi', churn_export),
             ]
@@ -1221,7 +1255,7 @@ if contracts_file and mapping_file:
             base_configs[c] = pd.to_numeric(base_configs[c], errors='coerce')
 
         base_df = contracts.copy()
-        base_df['Data sottoscrizione'] = parse_dates(base_df['Contract quote date'])
+        base_df['Data sottoscrizione'] = parse_dates(base_df['Contract: Customer Signed Date'])
         base_df['Data attivazione'] = parse_dates(base_df['Prospected activation date'])
         base_df['Data chiusura'] = parse_dates(base_df['Point of delivery: Closing date'])
         base_df['Mese sottoscrizione'] = base_df['Data sottoscrizione'].map(month)
@@ -1302,18 +1336,21 @@ if contracts_file and mapping_file:
         base_esclusi_stato['Tipo movimento'] = 'ESCLUSO_PER_STATO'
         base_esclusi_stato['Importo'] = 0.0
 
-        # Premio: coorte attivata X mesi prima e ancora ATTIVA nella competenza.
+        # Premio Base per coorte di firma: X mesi di vita + 2 mesi tecnici,
+        # con la competenza inclusa. Offset effettivo = X + 2 - 1 = X + 1.
+        # Lo stato ATTIVO viene osservato nel report consolidato corrente.
         base_premi = base_df[
             base_df['Partner'].notna()
             & base_df['Premio utenti attivi'].notna()
             & base_df['Mesi premio'].notna()
             & (base_df['Stato'] == 'ATTIVO')
         ].copy()
+        base_premi['Mesi tecnici pre-attivazione'] = 2
         base_premi['Mese obiettivo premio'] = base_premi['Mesi premio'].apply(
-            lambda x: competence - pd.DateOffset(months=int(x))
+            lambda x: competence - pd.DateOffset(months=int(x) + 1)
         )
         base_premi = base_premi[
-            base_premi['Mese attivazione'] == base_premi['Mese obiettivo premio']
+            base_premi['Mese sottoscrizione'] == base_premi['Mese obiettivo premio']
         ].copy()
         base_premi['Tipo movimento'] = 'PREMIO_UTENTI_ATTIVI'
         base_premi['Importo'] = base_premi['Premio utenti attivi']
@@ -1367,6 +1404,7 @@ if contracts_file and mapping_file:
             | set(base_premi['Partner'].dropna())
             | set(base_storni['Partner'].dropna())
         )
+        base_partner_reports = []
         for partner in base_partners:
             p_gettoni = base_gettoni[base_gettoni['Partner'] == partner].copy()
             p_nonvalid = base_df[
@@ -1401,12 +1439,14 @@ if contracts_file and mapping_file:
                 'Storno utenti cessati': p_storni,
             })
             safe_partner = re.sub(r'[^A-Za-z0-9._-]+', '_', str(partner)).strip('_') or 'partner'
+            base_report_name = f'report_base_{safe_partner}_{competence:%Y_%m}.xlsx'
+            base_partner_reports.append((base_report_name, partner_export))
             with st.container(border=True):
                 title_col, net_col, action_col = st.columns([2.5,1.3,1.1])
                 title_col.markdown(f'### {partner}')
                 title_col.caption(f'{len(p_gettoni):,} contratti commissionabili')
                 net_col.metric('Totale netto',format_euro(amount_netto))
-                action_col.download_button('Scarica report',partner_export,file_name=f'report_base_{safe_partner}_{competence:%Y_%m}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'base_{safe_partner}_{competence:%Y_%m}')
+                action_col.download_button('Scarica report',partner_export,file_name=base_report_name,mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'base_{safe_partner}_{competence:%Y_%m}')
                 k1,k2,k3=st.columns(3)
                 render_light_metric(k1, 'Gettone base', format_euro(amount_base))
                 render_light_metric(k2, 'Premialità', format_euro(amount_premio))
@@ -1445,11 +1485,23 @@ if contracts_file and mapping_file:
             'Esclusi SELF-GD': base_excl_sg,
             'Config incomplete': base_incomplete,
         })
-        st.download_button(
-            'Scarica risultato completo Base', base_export,
-            file_name=f'commissioni_base_{competence:%Y_%m}.xlsx',
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
+        base_reports_zip = reports_to_zip(tuple(base_partner_reports))
+        base_full_col, base_all_col = st.columns(2)
+        with base_full_col:
+            st.download_button(
+                'Scarica risultato completo Base', base_export,
+                file_name=f'commissioni_base_{competence:%Y_%m}.xlsx',
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                use_container_width=True,
+            )
+        with base_all_col:
+            st.download_button(
+                'Scarica tutti i report', base_reports_zip,
+                file_name=f'report_agenti_base_{competence:%Y_%m}.zip',
+                mime='application/zip', use_container_width=True,
+                disabled=not base_partner_reports,
+                key=f'download_all_base_{competence:%Y_%m}',
+            )
         render_footer()
         st.stop()
 
@@ -1491,7 +1543,7 @@ if contracts_file and mapping_file:
     ].copy()
 
     df = contracts.copy()
-    df['Data sottoscrizione'] = parse_dates(df['Contract quote date'])
+    df['Data sottoscrizione'] = parse_dates(df['Contract: Customer Signed Date'])
     df['Data attivazione'] = parse_dates(df['Prospected activation date'])
     df['Data chiusura'] = parse_dates(df['Point of delivery: Closing date'])
     df['Mese sottoscrizione'] = df['Data sottoscrizione'].map(month)
@@ -1751,7 +1803,7 @@ if contracts_file and mapping_file:
     cols = [
         'ID fornitura', 'Point of Delivery', 'Subscription Name',
         'Partner', 'Segmento', 'Customer type', 'Stato',
-        'Contract quote date', 'Prospected activation date', 'Point of delivery: Closing date',
+        'Contract: Customer Signed Date', 'Prospected activation date', 'Point of delivery: Closing date',
         'Subchannel', 'Promo code', 'Tipo movimento', 'Importo'
     ]
     movements = pd.concat([initial[cols], recurring[cols], malus_new[cols]], ignore_index=True)
@@ -1781,7 +1833,7 @@ if contracts_file and mapping_file:
 
     duplicate_supply = df['ID fornitura'].ne('') & df.duplicated('ID fornitura', keep=False)
     anomaly_flags = pd.DataFrame({
-        'Data sottoscrizione mancante': df['Data sottoscrizione'].isna(),
+        'Customer Signed Date mancante': df['Data sottoscrizione'].isna(),
         'Segmento non riconosciuto': df['Segmento'].isna(),
         'POD/PDR mancante': df['Point of Delivery'].eq(''),
         'Attivazione mancante': (df['Stato'] != 'ANNULLATO') & df['Data attivazione'].isna(),
@@ -1810,6 +1862,7 @@ if contracts_file and mapping_file:
         | set(recurring['Partner'].dropna())
         | set(malus_new['Partner'].dropna())
     )
+    advanced_partner_reports = []
     for partner in advanced_partners:
         p_initial = initial[initial['Partner'] == partner].copy()
         p_nonvalid = df[
@@ -1849,12 +1902,14 @@ if contracts_file and mapping_file:
             'Malus 50%': p_50,
         })
         safe_partner = re.sub(r'[^A-Za-z0-9._-]+', '_', str(partner)).strip('_') or 'partner'
+        advanced_report_name = f'report_avanzato_{safe_partner}_{competence:%Y_%m}.xlsx'
+        advanced_partner_reports.append((advanced_report_name, partner_export))
         with st.container(border=True):
             title_col,net_col,action_col=st.columns([2.5,1.3,1.1])
             title_col.markdown(f'### {partner}')
             title_col.caption(f'{len(p_initial):,} contratti con gettone')
             net_col.metric('Totale netto',format_euro(net_amount))
-            action_col.download_button('Scarica report',partner_export,file_name=f'report_avanzato_{safe_partner}_{competence:%Y_%m}.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'avanzato_{safe_partner}_{competence:%Y_%m}')
+            action_col.download_button('Scarica report',partner_export,file_name=advanced_report_name,mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'avanzato_{safe_partner}_{competence:%Y_%m}')
             k1,k2,k3=st.columns(3)
             render_light_metric(k1, 'Gettone base', format_euro(base_amount))
             render_light_metric(k2, 'Ricorrenti', format_euro(recurring_amount))
@@ -1897,11 +1952,20 @@ if contracts_file and mapping_file:
     st.subheader('Download operativi')
     st.caption('I malus sono determinati direttamente dalla Closing Date: non è più necessario conservare o ricaricare uno storico malus.')
     malus_month_export = to_excel({'Malus del mese': malus_new})
-    d1, d2 = st.columns(2)
+    advanced_reports_zip = reports_to_zip(tuple(advanced_partner_reports))
+    d1, d2, d3 = st.columns(3)
     with d1:
-        st.download_button('Scarica malus del mese', malus_month_export, file_name=f'malus_{competence:%Y_%m}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        st.download_button('Scarica malus del mese', malus_month_export, file_name=f'malus_{competence:%Y_%m}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', use_container_width=True)
     with d2:
-        st.download_button('Scarica risultato completo', export, file_name=f'commissioni_{competence:%Y_%m}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        st.download_button('Scarica risultato completo', export, file_name=f'commissioni_{competence:%Y_%m}.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', use_container_width=True)
+    with d3:
+        st.download_button(
+            'Scarica tutti i report', advanced_reports_zip,
+            file_name=f'report_agenti_avanzato_{competence:%Y_%m}.zip',
+            mime='application/zip', use_container_width=True,
+            disabled=not advanced_partner_reports,
+            key=f'download_all_advanced_{competence:%Y_%m}',
+        )
 else:
     st.warning('Carica il report contratti e il file identificatori per eseguire il calcolo.')
     render_footer(empty_state=True)
