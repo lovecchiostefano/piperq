@@ -648,7 +648,12 @@ def read_excel(upload, sheet_name=0):
 def to_excel(sheets):
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as writer:
+        written_sheets = 0
         for name, frame in sheets.items():
+            # Non creare tab vuote nei report destinati ai fornitori.
+            # Una tab viene mantenuta solo se contiene almeno una riga dati.
+            if frame is None or frame.empty:
+                continue
             export_frame = frame.copy()
             columns_to_remove = [
                 column for column in [
@@ -659,14 +664,23 @@ def to_excel(sheets):
             ]
             if columns_to_remove:
                 export_frame = export_frame.drop(columns=columns_to_remove)
-            export_frame.to_excel(writer, sheet_name=name[:31], index=False)
-            ws = writer.book[name[:31]]
+            sheet_name = name[:31]
+            export_frame.to_excel(writer, sheet_name=sheet_name, index=False)
+            written_sheets += 1
+            ws = writer.book[sheet_name]
             ws.freeze_panes = 'A2'
             ws.auto_filter.ref = ws.dimensions
             for col in ws.columns:
                 vals = [str(c.value) if c.value is not None else '' for c in col[:2000]]
                 width = min(max(max((len(v) for v in vals), default=8) + 2, 10), 45)
                 ws.column_dimensions[col[0].column_letter].width = width
+        # Protezione tecnica: openpyxl richiede almeno un foglio visibile.
+        # Nei flussi attuali la Sintesi è sempre valorizzata, ma questo fallback
+        # evita errori se in futuro venisse richiesto un export totalmente vuoto.
+        if written_sheets == 0:
+            pd.DataFrame({'Esito': ['Nessun dato disponibile']}).to_excel(
+                writer, sheet_name='Nessun dato', index=False
+            )
     out.seek(0)
     return out.getvalue()
 
