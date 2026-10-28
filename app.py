@@ -645,7 +645,7 @@ def read_excel(upload, sheet_name=0):
 
 
 @st.cache_data(show_spinner=False, max_entries=96)
-def to_excel(sheets):
+def to_excel(sheets, include_pod=False):
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as writer:
         written_sheets = 0
@@ -655,15 +655,23 @@ def to_excel(sheets):
             if frame is None or frame.empty:
                 continue
             export_frame = frame.copy()
-            columns_to_remove = [
-                column for column in [
-                    'Point of delivery: Point of delivery Name',
-                    'Point of Delivery',
+            pod_source_column = 'Point of delivery: Point of delivery Name'
+            pod_normalized_column = 'Point of Delivery'
+            if include_pod:
+                # Nei report autorizzati mostra un solo campo POD con il nome Salesforce.
+                if pod_source_column not in export_frame.columns and pod_normalized_column in export_frame.columns:
+                    export_frame = export_frame.rename(
+                        columns={pod_normalized_column: pod_source_column}
+                    )
+                elif pod_source_column in export_frame.columns and pod_normalized_column in export_frame.columns:
+                    export_frame = export_frame.drop(columns=[pod_normalized_column])
+            else:
+                columns_to_remove = [
+                    column for column in [pod_source_column, pod_normalized_column]
+                    if column in export_frame.columns
                 ]
-                if column in export_frame.columns
-            ]
-            if columns_to_remove:
-                export_frame = export_frame.drop(columns=columns_to_remove)
+                if columns_to_remove:
+                    export_frame = export_frame.drop(columns=columns_to_remove)
             sheet_name = name[:31]
             export_frame.to_excel(writer, sheet_name=sheet_name, index=False)
             written_sheets += 1
@@ -1445,13 +1453,21 @@ if contracts_file and mapping_file:
                 {'Voce': 'Utenti cessati stornati', 'Numero': len(p_storni), 'Importo': amount_storno},
                 {'Voce': 'TOTALE NETTO', 'Numero': pd.NA, 'Importo': amount_netto},
             ])
+            partner_cfg = base_configs[
+                base_configs['Agente'].astype(str).str.strip() == str(partner).strip()
+            ]
+            include_base_pod = bool(
+                not partner_cfg.empty
+                and partner_cfg['ESCLUDI SELF'].apply(is_yes).all()
+                and partner_cfg['ESCLUDI GD'].apply(is_yes).all()
+            )
             partner_export = to_excel({
                 'Sintesi': p_summary,
                 'Contratti validi': p_gettoni,
                 'Non validi': p_nonvalid,
                 'Premio utenti attivi': p_premi,
                 'Storno utenti cessati': p_storni,
-            })
+            }, include_pod=include_base_pod)
             safe_partner = re.sub(r'[^A-Za-z0-9._-]+', '_', str(partner)).strip('_') or 'partner'
             base_report_name = f'report_base_{safe_partner}_{competence:%Y_%m}.xlsx'
             base_partner_reports.append((base_report_name, partner_export))
@@ -1914,7 +1930,7 @@ if contracts_file and mapping_file:
             'Ricorrenti': p_recurring,
             'Malus 100%': p_100,
             'Malus 50%': p_50,
-        })
+        }, include_pod=True)
         safe_partner = re.sub(r'[^A-Za-z0-9._-]+', '_', str(partner)).strip('_') or 'partner'
         advanced_report_name = f'report_avanzato_{safe_partner}_{competence:%Y_%m}.xlsx'
         advanced_partner_reports.append((advanced_report_name, partner_export))
@@ -1962,10 +1978,10 @@ if contracts_file and mapping_file:
         'Anomalie': anomalies,
         'Config incomplete': invalid_configs,
         'Dati classificati': df,
-    })
+    }, include_pod=True)
     st.subheader('Download operativi')
     st.caption('I malus sono determinati direttamente dalla Closing Date: non è più necessario conservare o ricaricare uno storico malus.')
-    malus_month_export = to_excel({'Malus del mese': malus_new})
+    malus_month_export = to_excel({'Malus del mese': malus_new}, include_pod=True)
     advanced_reports_zip = reports_to_zip(tuple(advanced_partner_reports))
     d1, d2, d3 = st.columns(3)
     with d1:
