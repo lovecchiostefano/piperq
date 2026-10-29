@@ -657,8 +657,10 @@ def to_excel(sheets, include_pod=False):
             export_frame = frame.copy()
             pod_source_column = 'Point of delivery: Point of delivery Name'
             pod_normalized_column = 'Point of Delivery'
+            pod_substatus_column = 'Substatus from PoD'
             if include_pod:
-                # Nei report autorizzati mostra un solo campo POD con il nome Salesforce.
+                # Nei report autorizzati mostra POD e Substatus from PoD.
+                # Mantiene un solo campo POD con il nome Salesforce.
                 if pod_source_column not in export_frame.columns and pod_normalized_column in export_frame.columns:
                     export_frame = export_frame.rename(
                         columns={pod_normalized_column: pod_source_column}
@@ -666,8 +668,11 @@ def to_excel(sheets, include_pod=False):
                 elif pod_source_column in export_frame.columns and pod_normalized_column in export_frame.columns:
                     export_frame = export_frame.drop(columns=[pod_normalized_column])
             else:
+                # Dove il POD non è autorizzato, non esporre neppure il relativo Substatus.
                 columns_to_remove = [
-                    column for column in [pod_source_column, pod_normalized_column]
+                    column for column in [
+                        pod_source_column, pod_normalized_column, pod_substatus_column
+                    ]
                     if column in export_frame.columns
                 ]
                 if columns_to_remove:
@@ -752,7 +757,7 @@ if contracts_file and mapping_file:
         'Contract: Customer Signed Date', 'Status from PoD', 'Subscription Name',
         'Customer type', 'Subchannel', 'Promo code',
         'Prospected activation date', 'Point of delivery: Closing date',
-        'Point of delivery: Point of delivery Name'
+        'Point of delivery: Point of delivery Name', 'Substatus from PoD'
     }
     missing = required - set(contracts.columns)
     if missing:
@@ -1834,7 +1839,7 @@ if contracts_file and mapping_file:
         'ID fornitura', 'Point of Delivery', 'Subscription Name',
         'Partner', 'Segmento', 'Customer type', 'Stato',
         'Contract: Customer Signed Date', 'Prospected activation date', 'Point of delivery: Closing date',
-        'Subchannel', 'Promo code', 'Tipo movimento', 'Importo'
+        'Substatus from PoD', 'Subchannel', 'Promo code', 'Tipo movimento', 'Importo'
     ]
     movements = pd.concat([initial[cols], recurring[cols], malus_new[cols]], ignore_index=True)
 
